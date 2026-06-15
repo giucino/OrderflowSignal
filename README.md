@@ -2,12 +2,13 @@
 
 Eigenentwickelter ATAS-Indikator (C#) für Futures (ES/MES, NQ/MNQ). Verrechnet
 mehrere **Orderflow-Bedingungen** zu einem **richtungsgewichteten Bull/Bear-Score**
-und markiert Konfluenz direkt an der Kerze. Für **Tick-Charts (500/900T)** als
-Trigger-Layer und **Zeitcharts (M5)**. **Rein informativ — kein Entry-Signal.**
+und markiert Konfluenz direkt an der Kerze. Schwellen per **Perzentil-Auto-
+Kalibrierung** (rollend, mit Freeze). Für **Tick-Charts (500/900T)**, **Renko** und
+**Zeitcharts (M5)**. **Rein informativ — kein Entry-Signal.**
 
 > Teil eines mehrstufigen Projekts (**Stufe 2 — Trigger/Execution**). Setzt unter
 > der Kontext-Schicht (Market State / Bias Dashboard, M5/M15) an: M5 = Überblick,
-> Tick = Entry.
+> Tick/Renko = Entry.
 
 ## Was er macht
 
@@ -16,55 +17,66 @@ Pro Bar werden bis zu vier Bedingungen geprüft. Jede liefert eine **Richtung**
 ergeben `Bull` vs. `Bear`; ab der **Signal-Schwelle** auf der dominanten Seite feuert
 ein Marker.
 
-| # | Bedingung | Aktiv wenn | Richtung |
-|---|---|---|---|
-| 1 | **Delta signifikant** | \|Delta\| ≥ Faktor × Ø\|Delta\| (+ optionaler Absolut-Floor) | Vorzeichen des Deltas |
-| 2 | **Relatives Volumen** | Volume ≥ Faktor × ØVolume | Kerzenkörper (Close vs Open) |
-| 3 | **Absorption** | Volume ≥ Faktor × ØVolume **und** Range ≤ Faktor × ØRange | **Reversal** gegen den Aggressor (−sign Delta) |
-| 4 | **VWAP-Lage** | Session-VWAP vorhanden | Close über/unter Session-VWAP |
+| # | Bedingung | Metrik | Aktiv wenn | Richtung |
+|---|---|---|---|---|
+| 1 | **Delta** | \|Candle-Delta\| | ≥ kalibrierte Schwelle | Vorzeichen des Deltas |
+| 2 | **Volumen** | Candle-Volumen | ≥ kalibrierte Schwelle | Kerzenkörper (Close vs Open) |
+| 3 | **Absorption** | größtes Level-Delta (Ask−Bid je Preislevel) | ≥ kalibrierte Schwelle | **Reversal** gegen den Aggressor (−sign) |
+| 4 | **VWAP-Lage** | Close vs Session-VWAP | VWAP vorhanden | über/unter VWAP |
 
-- **Schwellen sind relativ** (Faktor × gleitender Ø der letzten *N* Bars) → derselbe
-  Indikator funktioniert ohne Codeänderung auf ES 500T, NQ 500T/900T und M5.
-- **Session-VWAP** ankert täglich über `IsNewSession` (läuft in London **und** NY,
-  kein RTH-Fenster-Filter). Akkumulation aus dem echten Bar-VWAP.
-- **Bull/Bear statt Roh-Count:** Konfluenz *in eine Richtung* statt nur „X Lichter".
-- **Signal-Cooldown** (Bars zwischen Markern) als Rausch-Bremse für schnelle Ticks.
-- **Charttyp-Warnung:** HUD warnt, wenn Volumen-Bars (RelVol ungültig) oder
-  Range/Renko (Absorption ungültig) geladen sind.
+### Perzentil-Auto-Kalibrierung
 
-Anzeige: **HUD** (Bull/Bear-Punkte, Signal-Flag, Bedingungs-Tags `Δ▲ Vol▲ Abs▼ VW▲`)
-**+ Pfeil-Marker** an den Kerzen mit Konfluenz.
+Statt fester Faktoren werden die Schwellen für Delta, Volumen und Absorption als
+**Perzentil der letzten *N* Bars** bestimmt (Default P85, N50) — robust gegen
+Ausreißer und instrument-/timeframe-agnostisch. Eine Bedingung feuert, wenn ihre
+Metrik in den oberen (100−P)% der jüngsten Bars liegt. (Konzept wie semaPHoreks
+Auto-Calibration, aber direkt eingebaut — kein `.sph`-Export/Import.)
+
+- **Rollend (Default):** Schwellen passen sich jeden Bar an.
+- **Freeze:** friert die aktuellen Schwellen ein (wie ein festes Session-Template,
+  z.B. getrennt für London / New York).
+- **Basic / Advanced:** ein globaler Perzentil-Wert, optional pro Bedingung übersteuerbar.
+
+### Warum Renko funktioniert
+
+Absorption ist **footprint-basiert** (Level-Delta), nicht range-basiert — daher
+**range-unabhängig** und auch auf Renko/Range-Charts gültig. Renko-Bricks tragen
+echtes Volumen/Delta/Cluster pro Brick.
+
+- **Session-VWAP** ankert täglich über `IsNewSession` (läuft in London **und** NY).
+- **Bull/Bear statt Roh-Count:** Konfluenz *in eine Richtung*.
+- **Signal-Cooldown** (Bars zwischen Markern) als Rausch-Bremse.
+
+Anzeige: **HUD** (Bull/Bear-Punkte, Signal-Flag, Tags `Δ▲ Vol▲ Abs▼ VW▲`, kalibrierte
+Schwellen wie ein „Result"-Panel) **+ Pfeil-Marker** an den Kerzen mit Konfluenz.
 
 ## Empfohlener Chart
 
-**Tick-Chart 500/900T** (Entry) — alle vier Bedingungen gültig. Auch auf **M5**
-nutzbar. **Nicht** auf Volumen-Bars (RelVol konstant) oder Range/Renko (Range
-konstant → Absorption sinnlos); davor warnt das HUD.
+**Tick 500/900T**, **Renko (z.B. 8R)** oder **M5**. **Nicht** auf Volumen-Bars
+(Volumen je Bar konstant → Volumen-Perzentil bedeutungslos); davor warnt das HUD.
 
 > Kalibrierung zuerst auf **MES** (liquide, ruhiger), dann Portierung auf NQ/MNQ —
-> Code identisch, ggf. nur Faktoren/Lookback anpassen.
+> Code identisch, ggf. nur Perzentil/Lookback anpassen.
 
 ## Einstellungen (Kurzüberblick)
 
 | Gruppe | Einstellung |
 |---|---|
-| Allgemein | Lookback, Signal-Schwelle, Signal-Cooldown, HUD/Marker an |
-| Bedingung: Delta | aktiv, Gewicht, Faktor, Mindest-Absolut |
-| Bedingung: Volumen | aktiv, Gewicht, Faktor |
-| Bedingung: Absorption | aktiv, Gewicht, Vol-Faktor, Range-Faktor |
-| Bedingung: VWAP | aktiv, Gewicht |
+| Allgemein | Lookback, Signal-Schwelle, Signal-Cooldown, HUD/Marker/Kalibrierung an |
+| Kalibrierung | Globaler Perzentil, Advanced-Override, Freeze, Perzentil je Bedingung |
+| Bedingung: Delta / Volumen / Absorption / VWAP | je aktiv + Gewicht |
 | Darstellung | Schriftgröße, Position, Abstände, Marker-Abstand |
 | Farben | Bull / Bear / Neutral / Hintergrund |
 
 Default-Gewichte: Delta 30, Volumen 20, Absorption 25, VWAP 25 (Summe 100),
-Signal-Schwelle 50. An echten Sessions kalibrieren, nicht am Schreibtisch festlegen.
+Signal-Schwelle 50, Perzentil 85, Lookback 50. An echten Sessions kalibrieren.
 
 ## Hinweise
 
 - Der **sich bildende Bar repaintet** bis zum Schluss (Signal kann kippen). Marker
   auf abgeschlossenen Bars sind stabil.
 - Absorption ist als **Reversal** modelliert (Aggressor absorbiert → Gegenrichtung).
-  Wer Absorption als Continuation lesen will, dreht das Vorzeichen / Gewicht.
+- Auf Charts ohne Footprint-Daten nutzt Absorption das Candle-Delta als Fallback.
 
 ## Build & Installation
 
