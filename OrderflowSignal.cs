@@ -39,8 +39,8 @@ namespace OrderflowSignal
         // ─────────────────────────────────────────────────────────────────
         // Globaler Perzentil-Wert (Basic). Schwelle = dieses Perzentil der letzten
         // N Bars; ein Bar ist "aktiv", wenn seine Metrik >= Schwelle (also in den
-        // oberen (100 - P) % liegt).
-        private int _globalPercentile = 85;
+        // oberen (100 - P) % liegt). Default 95 = semaPHoreks erprobte Selektivitaet.
+        private int _globalPercentile = 95;
 
         // Advanced: pro Bedingung eigenen Perzentil-Wert verwenden.
         private bool _useAdvancedPercentiles = false;
