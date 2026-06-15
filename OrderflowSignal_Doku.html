@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Orderflow Signal (Multi-Condition) — Dokumentation</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    background: #14161c; color: #d7dce6;
+    font: 15px/1.6 "Segoe UI", Roboto, Arial, sans-serif;
+    max-width: 880px; margin: 0 auto; padding: 32px 24px 80px;
+  }
+  h1 { font-size: 26px; margin: 0 0 4px; color: #fff; }
+  h2 { font-size: 20px; margin: 34px 0 10px; color: #fff; border-bottom: 1px solid #2a2e38; padding-bottom: 6px; }
+  h3 { font-size: 16px; margin: 22px 0 6px; color: #eaeef6; }
+  .sub { color: #8b94a6; margin: 0 0 20px; }
+  code { background: #20242e; padding: 1px 6px; border-radius: 4px; font-family: Consolas, monospace; font-size: 13px; color: #e6c07b; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #2a2e38; vertical-align: top; }
+  th { color: #fff; background: #1b1e26; }
+  td:first-child { white-space: nowrap; color: #eaeef6; font-weight: 600; }
+  .bull { color: #51cd6b; font-weight: 600; }
+  .bear { color: #e35a5a; font-weight: 600; }
+  .note { background: #1b2530; border-left: 3px solid #4a90d9; padding: 10px 14px; border-radius: 4px; margin: 14px 0; }
+  .warn { background: #2a2118; border-left: 3px solid #d9a14a; padding: 10px 14px; border-radius: 4px; margin: 14px 0; }
+  ul { margin: 6px 0 6px 0; padding-left: 22px; }
+  li { margin: 4px 0; }
+  .tag { display:inline-block; font-size:12px; background:#2a2e38; color:#9fb0c8; padding:1px 8px; border-radius:10px; }
+  pre { background:#1b1e26; padding:12px 14px; border-radius:6px; color:#d7dce6; font-size:13px; overflow:auto; }
+</style>
+</head>
+<body>
+
+<h1>Orderflow Signal (Multi-Condition)</h1>
+<p class="sub">Stufe 2 / Trigger — verrechnet mehrere Orderflow-Bedingungen zu einem richtungsgewichteten Bull/Bear-Score. Für Tick-Charts (500/900T), Renko und M5. Rein informativ, kein Entry-Signal.</p>
+
+<h2>Was der Indikator macht</h2>
+<p>
+Pro Bar werden bis zu vier Orderflow-Bedingungen geprüft. Jede liefert eine <strong>Richtung</strong>
+(<span class="bull">bullish</span> / <span class="bear">bearish</span>) und steuert ihr <strong>Gewicht</strong>
+zur jeweiligen Seite bei. Die Summen ergeben <code>Bull</code> vs. <code>Bear</code>; ab der
+<strong>Signal-Schwelle</strong> auf der dominanten Seite feuert ein Pfeil-Marker an der Kerze.
+</p>
+<div class="note">
+<strong>Konfluenz statt Einzelsignal:</strong> Ein einzelner Trigger reicht nicht — erst wenn mehrere Bedingungen
+gewichtet in <em>dieselbe</em> Richtung zeigen, entsteht ein Signal. Das ist der Rausch-Filter gegenüber einem
+Einzel-Indikator. Anders als ein reiner „X von 9 Lichter"-Count trennt der Bull/Bear-Score sauber die Richtung.
+</div>
+
+<h2>Die vier Bedingungen</h2>
+<table>
+  <tr><th>Bedingung</th><th>Metrik</th><th>Aktiv wenn</th><th>Richtung</th></tr>
+  <tr><td>Delta</td><td>|Candle-Delta|</td><td>≥ kalibrierte Schwelle</td><td>Vorzeichen des Deltas</td></tr>
+  <tr><td>Volumen</td><td>Candle-Volumen</td><td>≥ kalibrierte Schwelle</td><td>Kerzenkörper (Close vs Open)</td></tr>
+  <tr><td>Absorption</td><td>größtes Level-Delta (Ask−Bid je Preislevel)</td><td>≥ kalibrierte Schwelle</td><td><span class="bear">Reversal</span> gegen den Aggressor (−sign)</td></tr>
+  <tr><td>VWAP-Lage</td><td>Close vs Session-VWAP</td><td>VWAP vorhanden</td><td>über = <span class="bull">bull</span>, unter = <span class="bear">bear</span></td></tr>
+</table>
+<p>
+<strong>Absorption</strong> ist als <em>Reversal</em> modelliert: ein Preislevel mit großem aggressivem Delta, das
+absorbiert wird (Aggressor kommt nicht durch), spricht für die Gegenrichtung. <strong>VWAP</strong> ist ein reiner
+Bias und wird nicht kalibriert.
+</p>
+
+<h2>Perzentil-Auto-Kalibrierung</h2>
+<p>
+Statt fester Faktoren werden die Schwellen für Delta, Volumen und Absorption als <strong>Perzentil der letzten
+<em>N</em> Bars</strong> bestimmt (Default <code>P85</code> / <code>N50</code>). Eine Bedingung feuert, wenn ihre Metrik
+in den oberen <code>(100−P)%</code> der jüngsten Bars liegt — robust gegen Ausreißer und instrument-/timeframe-agnostisch.
+</p>
+<ul>
+  <li><strong>Rollend (Default):</strong> die Schwellen passen sich jeden Bar dem aktuellen Markt an.</li>
+  <li><strong>Freeze ❄:</strong> friert die aktuellen Schwellen ein — wie ein festes Session-Template (z.B. getrennt für London / New York).</li>
+  <li><strong>Basic / Advanced:</strong> ein globaler Perzentil-Wert, optional pro Bedingung übersteuerbar.</li>
+</ul>
+<div class="note">
+Konzept wie die Auto-Calibration verbreiteter Orderflow-Tools (Perzentil über die letzten N Bars), aber
+<strong>direkt eingebaut</strong> — kein Export/Import von Kalibrierungs-Dateien nötig.
+</div>
+
+<h2>Warum Renko funktioniert</h2>
+<p>
+Absorption ist <strong>footprint-basiert</strong> (Level-Delta), nicht range-basiert — daher range-unabhängig und auch
+auf <strong>Renko/Range-Charts</strong> gültig. Renko-Bricks tragen echtes Volumen, Delta und Cluster pro Brick.
+Der <strong>Session-VWAP</strong> ankert täglich über <code>IsNewSession</code> und läuft damit in London <em>und</em> New York.
+</p>
+
+<h2>Anzeige</h2>
+<pre>
+ORDERFLOW (Tick 500)
+&#9650; 55    &#9660; 20            &larr; Bull- / Bear-Gewichtssumme
+SIGNAL: LONG                  &larr; LONG / SHORT / &mdash;
+&Delta;&#9650; Vol&#9650; Abs&#9660; VW&#9650;          &larr; Richtung je Bedingung
+Cal P85 N50 &#10052;             &larr; Perzentil, Fenster, Freeze-Status
+V&ge;7611  &Delta;&ge;721  A&ge;181        &larr; aktuell kalibrierte Schwellen
+</pre>
+<p>
+Zusätzlich <strong>Pfeil-Marker</strong> an den Kerzen mit Konfluenz: <span class="bull">▲</span> unter dem Low (Long),
+<span class="bear">▼</span> über dem High (Short).
+</p>
+
+<h2>Empfohlener Chart</h2>
+<p>
+<strong>Tick 500/900T</strong>, <strong>Renko (z.B. 8R)</strong> oder <strong>M5</strong>. Alle Schwellen sind relativ
+(Perzentil), der Indikator passt sich also dem Timeframe automatisch an.
+</p>
+<div class="warn">
+<strong>Nicht auf Volumen-Bars</strong> — dort ist das Volumen je Bar konstant, das Volumen-Perzentil also
+bedeutungslos. Davor warnt das HUD. In der <strong>Anlaufphase</strong> (weniger als N Bars Historie) feuert noch nichts.
+Der <strong>sich bildende Bar repaintet</strong> bis zum Schluss; Marker auf abgeschlossenen Bars sind stabil.
+</div>
+
+<h2>Einstellungen</h2>
+<table>
+  <tr><th>Gruppe</th><th>Einstellung</th></tr>
+  <tr><td>Allgemein</td><td>Lookback (N), Signal-Schwelle, Signal-Cooldown, HUD/Marker/Kalibrierung anzeigen</td></tr>
+  <tr><td>Kalibrierung</td><td>Globaler Perzentil, Advanced-Override, Freeze, Perzentil je Bedingung</td></tr>
+  <tr><td>Bedingungen</td><td>Delta / Volumen / Absorption / VWAP — je aktiv + Gewicht</td></tr>
+  <tr><td>Darstellung</td><td>Schriftgröße, Position (oben links/rechts), Abstände, Marker-Abstand (Ticks)</td></tr>
+  <tr><td>Farben</td><td>Bull / Bear / Neutral / Hintergrund</td></tr>
+</table>
+<p>
+Default-Gewichte: Delta 30, Volumen 20, Absorption 25, VWAP 25 (Summe 100), Signal-Schwelle 50, Perzentil 85, Lookback 50.
+</p>
+
+<h2>Kalibrierung</h2>
+<ol>
+  <li>Auf einem repräsentativen Chart (z.B. MES 8R) beobachten: passen die HUD-Schwellen <code>V≥ Δ≥ A≥</code> zur Größenordnung deines Auges / eines Referenz-Tools?</li>
+  <li>Zu viele Marker → Perzentil höher (z.B. 90) oder Signal-Schwelle / Cooldown rauf.</li>
+  <li>Zu wenige Marker → Perzentil runter (z.B. 80) oder Gewichte / Signal-Schwelle nachziehen.</li>
+  <li>Für stabile, konsistente Signale über eine Session: einmal kalibrieren, dann <strong>Freeze</strong> aktivieren.</li>
+</ol>
+
+<p class="sub" style="margin-top:40px;">
+<span class="tag">Eigenentwicklung</span> Teil eines mehrstufigen ATAS-Orderflow-Projekts (Stufe 2 — Trigger). Kontext-Schicht: Market State + Bias Dashboard (M5/M15).
+</p>
+
+</body>
+</html>
