@@ -70,6 +70,14 @@ Divergenz noch echte Absorption haben.
 
 Eigener Score (0–100 %), feuert ab `Reversal-Schwelle`. Gewichte je Teil-Bedingung einstellbar.
 
+### Balance-Range (Value Area)
+
+Zeichnet die aktuelle **Value Area** (VAH/VAL/vPOC) über ein rollendes Fenster als
+schattiertes Band + Ränder + vPOC-Linie — die „Balance", in der der Preis rotiert.
+Einstellbar: `Range Lookback` (Bars fürs Profil), `Value-Area Anteil %` (Standard 70).
+*Phase 2a: nur Visualisierung/Kalibrierung.* Das Reversal-Gate an den Rändern (nur dort
+faden) folgt als Phase 2b.
+
 ### Signalqualität
 
 - **Min-Score-Filter** (Default 60 %): blendet schwache Signale (z.B. nur VWAP + eine

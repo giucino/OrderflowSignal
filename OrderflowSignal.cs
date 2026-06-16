@@ -108,6 +108,14 @@ namespace OrderflowSignal
         private int _revVpocWeight = 20;      // vPOC im Docht
         private int _revExhWeight = 20;       // Exhaustion (duennes Aggressor-Vol)
 
+        // ── BALANCE-RANGE (Phase 2a) ───────────────────────────────────────
+        // Value Area (VAH/VAL/vPOC) ueber ein rollendes Fenster -> zeichnet die
+        // aktuelle Balance. (Reversal-Gate an den Raendern folgt in Phase 2b.)
+        private bool _rangeEnabled = true;
+        private int _rangeLookback = 100;     // Bars fuer das Volumen-Profil
+        private int _rangeValuePct = 70;      // Value-Area-Anteil (%)
+        private bool _rangeExtendRight = true;
+
         // ─────────────────────────────────────────────────────────────────
         //  EINSTELLUNGEN — Darstellung / Farben
         // ─────────────────────────────────────────────────────────────────
@@ -126,6 +134,9 @@ namespace OrderflowSignal
         private Color _colorDim = Color.FromArgb(190, 140, 150, 170);
         private Color _colorRevBull = Color.FromArgb(235, 70, 220, 220);   // Reversal Long = tuerkis
         private Color _colorRevBear = Color.FromArgb(235, 240, 140, 40);   // Reversal Short = orange
+        private Color _colorRangeBand = Color.FromArgb(30, 120, 140, 185); // Value-Area-Band (transparent)
+        private Color _colorRangeEdge = Color.FromArgb(200, 130, 160, 210);// VAH/VAL-Linien
+        private Color _colorRangePoc = Color.FromArgb(220, 235, 200, 90);  // vPOC-Linie
 
         // ─────────────────────────────────────────────────────────────────
         //  STATE
@@ -155,6 +166,11 @@ namespace OrderflowSignal
         // Reversal: pro Bar signierter Reversal-Score (> 0 Long-Umkehr, < 0 Short).
         private readonly List<int> _revSignals = new();
         private int _lastRevBar = -1;   // Cooldown-Tracking fuer Reversal-Marker
+
+        // Balance-Range (Value Area) — zuletzt berechnete Werte fuer das Rendering.
+        private decimal _rangeVah, _rangeVal, _rangeVpoc;
+        private int _rangeStartBar;
+        private bool _rangeValid;
 
         // Zuletzt berechnete Schwellen (fuer HUD + Freeze-Snapshot).
         private decimal _liveVolThr, _liveDeltaThr, _liveAbsThr;
@@ -353,6 +369,33 @@ namespace OrderflowSignal
         [Range(0, 100)]
         public int RevExhWeight { get => _revExhWeight; set { _revExhWeight = value; RecalculateValues(); } }
 
+        // ── Balance-Range ──────────────────────────────────────────────────
+        [Display(Name = "Balance-Range zeichnen", GroupName = "Balance-Range", Order = 90,
+            Description = "Value Area (VAH/VAL/vPOC) ueber ein rollendes Fenster zeichnen.")]
+        public bool RangeEnabled { get => _rangeEnabled; set { _rangeEnabled = value; RecalculateValues(); } }
+
+        [Display(Name = "Range Lookback (Bars)", GroupName = "Balance-Range", Order = 91,
+            Description = "Anzahl Bars fuer das Volumen-Profil der Value Area.")]
+        [Range(10, 2000)]
+        public int RangeLookback { get => _rangeLookback; set { _rangeLookback = Math.Max(10, value); RecalculateValues(); } }
+
+        [Display(Name = "Value-Area Anteil (%)", GroupName = "Balance-Range", Order = 92,
+            Description = "Anteil des Volumens in der Value Area (Standard 70%).")]
+        [Range(30, 95)]
+        public int RangeValuePct { get => _rangeValuePct; set { _rangeValuePct = Math.Clamp(value, 30, 95); RecalculateValues(); } }
+
+        [Display(Name = "Linien nach rechts verlaengern", GroupName = "Balance-Range", Order = 93)]
+        public bool RangeExtendRight { get => _rangeExtendRight; set { _rangeExtendRight = value; RedrawChart(); } }
+
+        [Display(Name = "Farbe Range-Band", GroupName = "Farben", Order = 76)]
+        public Color ColorRangeBand { get => _colorRangeBand; set { _colorRangeBand = value; RedrawChart(); } }
+
+        [Display(Name = "Farbe Range-Raender", GroupName = "Farben", Order = 77)]
+        public Color ColorRangeEdge { get => _colorRangeEdge; set { _colorRangeEdge = value; RedrawChart(); } }
+
+        [Display(Name = "Farbe vPOC", GroupName = "Farben", Order = 78)]
+        public Color ColorRangePoc { get => _colorRangePoc; set { _colorRangePoc = value; RedrawChart(); } }
+
         // ─────────────────────────────────────────────────────────────────
         //  PROPERTIES — Darstellung / Farben
         // ─────────────────────────────────────────────────────────────────
@@ -432,9 +475,11 @@ namespace OrderflowSignal
                 return;
 
             ComputeLive();
+            ComputeBalanceRange();
 
             string key = $"{_hudBull}|{_hudBear}|{_hudSignal}|{_hudRev}|{_hudTags}|{_hudWarn}|{_chartLabel}|" +
-                         $"{_liveVolThr}|{_liveDeltaThr}|{_liveAbsThr}|{_freezeCalibration}|{CurrentBar}";
+                         $"{_liveVolThr}|{_liveDeltaThr}|{_liveAbsThr}|{_freezeCalibration}|" +
+                         $"{_rangeVah}|{_rangeVal}|{_rangeVpoc}|{CurrentBar}";
             if (key != _lastRenderKey)
             {
                 _lastRenderKey = key;
@@ -477,6 +522,7 @@ namespace OrderflowSignal
             _revSignals.Clear();
             _lastSignalBar = -1;
             _lastRevBar = -1;
+            _rangeValid = false;
             // _frz* NICHT zuruecksetzen -> eingefrorene Kalibrierung ueberlebt Recalc.
             _hudBull = _hudBear = _hudSignal = _hudRev = 0;
             _hudTags = "";
@@ -813,6 +859,96 @@ namespace OrderflowSignal
         }
 
         // ─────────────────────────────────────────────────────────────────
+        //  BALANCE-RANGE (Value Area ueber rollendes Fenster)
+        // ─────────────────────────────────────────────────────────────────
+        private void ComputeBalanceRange()
+        {
+            _rangeValid = false;
+            if (!_rangeEnabled)
+                return;
+
+            int last = CurrentBar - 1;
+            int start = last - _rangeLookback + 1;
+            if (start < 0)
+                start = 0;
+            if (last < start)
+                return;
+
+            var hist = new Dictionary<decimal, decimal>();
+            for (int i = start; i <= last; i++)
+            {
+                var ci = GetCandle(i);
+                if (ci != null)
+                    AddCandleToHistogram(ci, hist);
+            }
+            if (hist.Count == 0)
+                return;
+
+            ComputeValueArea(hist, _rangeValuePct, out _rangeVpoc, out _rangeVah, out _rangeVal);
+            _rangeStartBar = start;
+            _rangeValid = _rangeVah > 0 && _rangeVal > 0;
+        }
+
+        private static void AddCandleToHistogram(IndicatorCandle candle, Dictionary<decimal, decimal> hist)
+        {
+            bool any = false;
+            foreach (var pv in candle.GetAllPriceLevels())
+            {
+                any = true;
+                hist[pv.Price] = (hist.TryGetValue(pv.Price, out var v) ? v : 0m) + pv.Volume;
+            }
+            if (!any && candle.Volume > 0)
+                hist[candle.Close] = (hist.TryGetValue(candle.Close, out var v2) ? v2 : 0m) + candle.Volume;
+        }
+
+        // Standard-Value-Area: vPOC finden, dann greedy zu beiden Seiten den
+        // groesseren Nachbarn aufnehmen, bis pct% des Volumens abgedeckt sind.
+        private static void ComputeValueArea(Dictionary<decimal, decimal> hist, int pct,
+                                             out decimal vpoc, out decimal vah, out decimal val)
+        {
+            vpoc = vah = val = 0;
+            if (hist.Count == 0)
+                return;
+
+            var prices = new List<decimal>(hist.Keys);
+            prices.Sort();
+            decimal total = 0;
+            foreach (var v in hist.Values) total += v;
+
+            decimal maxVol = -1m;
+            int pocIdx = 0;
+            for (int i = 0; i < prices.Count; i++)
+            {
+                var vol = hist[prices[i]];
+                if (vol > maxVol) { maxVol = vol; pocIdx = i; }
+            }
+            vpoc = prices[pocIdx];
+
+            decimal target = total * (pct / 100m);
+            decimal acc = hist[prices[pocIdx]];
+            int lo = pocIdx, hi = pocIdx;
+            while (acc < target && (lo > 0 || hi < prices.Count - 1))
+            {
+                decimal volBelow = lo > 0 ? hist[prices[lo - 1]] : -1m;
+                decimal volAbove = hi < prices.Count - 1 ? hist[prices[hi + 1]] : -1m;
+                if (volAbove >= volBelow)
+                {
+                    if (hi < prices.Count - 1) { hi++; acc += hist[prices[hi]]; }
+                    else if (lo > 0) { lo--; acc += hist[prices[lo]]; }
+                    else break;
+                }
+                else
+                {
+                    if (lo > 0) { lo--; acc += hist[prices[lo]]; }
+                    else if (hi < prices.Count - 1) { hi++; acc += hist[prices[hi]]; }
+                    else break;
+                }
+            }
+            val = prices[lo];
+            vah = prices[hi];
+        }
+
+        // ─────────────────────────────────────────────────────────────────
         //  REVERSAL-ENGINE
         // ─────────────────────────────────────────────────────────────────
         // Liefert den signierten Reversal-Score: > 0 Long-Umkehr (am Tief),
@@ -983,6 +1119,8 @@ namespace OrderflowSignal
             if (_font == null)
                 return;
 
+            DrawBalanceRange(context);
+
             if (_showMarkers)
             {
                 DrawMarkers(context);
@@ -991,6 +1129,46 @@ namespace OrderflowSignal
 
             if (_showHud)
                 DrawHud(context);
+        }
+
+        private void DrawBalanceRange(RenderContext context)
+        {
+            if (!_rangeEnabled || !_rangeValid)
+                return;
+            if (ChartInfo?.PriceChartContainer is not { } cont)
+                return;
+
+            var region = cont.Region;
+            int yVah, yVal, yPoc, xStart;
+            try
+            {
+                yVah = cont.GetYByPrice(_rangeVah, false);
+                yVal = cont.GetYByPrice(_rangeVal, false);
+                yPoc = cont.GetYByPrice(_rangeVpoc, false);
+                xStart = _rangeExtendRight ? region.Left
+                       : Math.Max(region.Left, cont.GetXByBar(_rangeStartBar, false));
+            }
+            catch { return; }
+
+            int xEnd = region.Right;
+            if (xEnd <= xStart)
+                return;
+
+            // Band (VAL..VAH). Hoeherer Preis = kleineres y -> yVah < yVal.
+            int top = Math.Min(yVah, yVal);
+            int h = Math.Abs(yVal - yVah);
+            if (h > 0)
+                context.FillRectangle(_colorRangeBand, new Rectangle(xStart, top, xEnd - xStart, h));
+
+            var edgePen = new RenderPen(_colorRangeEdge, 1);
+            context.DrawLine(edgePen, xStart, yVah, xEnd, yVah);
+            context.DrawLine(edgePen, xStart, yVal, xEnd, yVal);
+            context.DrawLine(new RenderPen(_colorRangePoc, 1), xStart, yPoc, xEnd, yPoc);
+
+            // Labels rechts an den Linien.
+            context.DrawString($"VAH {_rangeVah:0.##}", _font, _colorRangeEdge, xEnd - 110, yVah - 14);
+            context.DrawString($"VAL {_rangeVal:0.##}", _font, _colorRangeEdge, xEnd - 110, yVal + 2);
+            context.DrawString($"POC {_rangeVpoc:0.##}", _font, _colorRangePoc, xEnd - 110, yPoc - 14);
         }
 
         private void DrawMarkers(RenderContext context)
