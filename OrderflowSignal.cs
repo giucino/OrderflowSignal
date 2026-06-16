@@ -55,23 +55,39 @@ namespace OrderflowSignal
         // ─────────────────────────────────────────────────────────────────
         //  EINSTELLUNGEN — Bedingungen (aktiv? + Gewicht)
         // ─────────────────────────────────────────────────────────────────
+        // Gewichte summieren sich als Default auf 100; der Score wird auf den
+        // Anteil der AKTIVEN Gewichte normiert (0-100 %), damit Filter/Schwelle
+        // stabil bleiben, egal wie viele Bedingungen aktiv sind.
+
         // 1) Delta signifikant. Richtung = Vorzeichen des Candle-Deltas.
         private bool _deltaEnabled = true;
-        private int _deltaWeight = 30;
+        private int _deltaWeight = 20;
 
         // 2) Volumen-Spike. Richtung = Kerzenkoerper (Close vs Open).
         private bool _volEnabled = true;
-        private int _volWeight = 20;
+        private int _volWeight = 15;
 
         // 3) Footprint-Absorption: groesstes Level-Delta (Ask-Bid je Preislevel)
         //    ueber der Schwelle -> der Aggressor wurde absorbiert. Richtung =
         //    REVERSAL gegen den Aggressor. Range-unabhaengig -> auch auf Renko.
         private bool _absEnabled = true;
-        private int _absWeight = 25;
+        private int _absWeight = 20;
 
         // 4) VWAP-Lage als Bias (keine Kalibrierung). Close ueber/unter Session-VWAP.
         private bool _vwapEnabled = true;
-        private int _vwapWeight = 25;
+        private int _vwapWeight = 15;
+
+        // 5) Imbalance (diagonal): gestapelte Ask[p] >= Ratio*Bid[p-Tick] (Buy) bzw.
+        //    Bid[p] >= Ratio*Ask[p+Tick] (Sell). Richtung = dominante Stapelseite.
+        private bool _imbEnabled = true;
+        private int _imbWeight = 15;
+        private decimal _imbRatio = 2.0m;
+        private int _imbMinCount = 3;
+
+        // 6) vPOC-in-Wick: POC im unteren Docht = Kaeufer-Rejection (bullish),
+        //    im oberen Docht = Verkaeufer-Rejection (bearish). Location-basiert.
+        private bool _vpocEnabled = true;
+        private int _vpocWeight = 15;
 
         // ─────────────────────────────────────────────────────────────────
         //  EINSTELLUNGEN — Darstellung / Farben
@@ -238,6 +254,31 @@ namespace OrderflowSignal
             Description = "Bias: Close ueber Session-VWAP = bullish, darunter = bearish. VWAP ankert taeglich (IsNewSession).")]
         [Range(0, 100)]
         public int VwapWeight { get => _vwapWeight; set { _vwapWeight = value; RecalculateValues(); } }
+
+        [Display(Name = "Imbalance aktiv", GroupName = "Bedingung: Imbalance", Order = 52)]
+        public bool ImbEnabled { get => _imbEnabled; set { _imbEnabled = value; RecalculateValues(); } }
+
+        [Display(Name = "Imbalance Gewicht", GroupName = "Bedingung: Imbalance", Order = 53)]
+        [Range(0, 100)]
+        public int ImbWeight { get => _imbWeight; set { _imbWeight = value; RecalculateValues(); } }
+
+        [Display(Name = "Imbalance Ratio", GroupName = "Bedingung: Imbalance", Order = 54,
+            Description = "Diagonale Schwelle: Ask[p] >= Ratio * Bid[p-Tick] (Buy) bzw. umgekehrt. Default 2.0 = 200%.")]
+        [Range(1.0, 20.0)]
+        public decimal ImbRatio { get => _imbRatio; set { _imbRatio = value; RecalculateValues(); } }
+
+        [Display(Name = "Imbalance Mindest-Anzahl", GroupName = "Bedingung: Imbalance", Order = 55,
+            Description = "Mindestanzahl diagonaler Imbalances auf der dominanten Seite (gestapelt).")]
+        [Range(1, 50)]
+        public int ImbMinCount { get => _imbMinCount; set { _imbMinCount = Math.Max(1, value); RecalculateValues(); } }
+
+        [Display(Name = "vPOC-in-Wick aktiv", GroupName = "Bedingung: vPOC", Order = 56)]
+        public bool VpocEnabled { get => _vpocEnabled; set { _vpocEnabled = value; RecalculateValues(); } }
+
+        [Display(Name = "vPOC Gewicht", GroupName = "Bedingung: vPOC", Order = 57,
+            Description = "POC im unteren Docht = bullish (Kaeufer-Rejection), oberer Docht = bearish.")]
+        [Range(0, 100)]
+        public int VpocWeight { get => _vpocWeight; set { _vpocWeight = value; RecalculateValues(); } }
 
         // ─────────────────────────────────────────────────────────────────
         //  PROPERTIES — Darstellung / Farben
@@ -414,7 +455,8 @@ namespace OrderflowSignal
             _hudBull = o.Bull;
             _hudBear = o.Bear;
             _hudSignal = sig;
-            _hudTags = $"Δ{Arrow(o.DirDelta)} Vol{Arrow(o.DirVol)} Abs{Arrow(o.DirAbs)} VW{Arrow(o.DirVwap)}";
+            _hudTags = $"Δ{Arrow(o.DirDelta)} Vol{Arrow(o.DirVol)} Abs{Arrow(o.DirAbs)} " +
+                       $"VW{Arrow(o.DirVwap)} Im{Arrow(o.DirImb)} vP{Arrow(o.DirVpoc)}";
             _hudWarn = BuildWarning();
             _chartLabel = BuildChartLabel();
         }
@@ -425,7 +467,7 @@ namespace OrderflowSignal
         private struct EvalOut
         {
             public int Bull, Bear;
-            public int DirDelta, DirVol, DirAbs, DirVwap;
+            public int DirDelta, DirVol, DirAbs, DirVwap, DirImb, DirVpoc;
         }
 
         private EvalOut EvaluateBar(int bar, IndicatorCandle c, decimal signedMld, decimal vwap, bool vwapValid)
@@ -467,7 +509,49 @@ namespace OrderflowSignal
                 Accumulate(ref o, o.DirVwap, _vwapWeight);
             }
 
+            // 5) Imbalance (diagonal, gestapelt).
+            if (_imbEnabled)
+            {
+                decimal tick = InstrumentInfo?.TickSize ?? 0m;
+                if (tick > 0 && EvaluateImbalance(c, tick, _imbRatio, _imbMinCount, out int idir))
+                {
+                    o.DirImb = idir;
+                    Accumulate(ref o, idir, _imbWeight);
+                }
+            }
+
+            // 6) vPOC-in-Wick (location-basiert).
+            if (_vpocEnabled)
+            {
+                int vdir = VpocWickDir(c);
+                if (vdir != 0)
+                {
+                    o.DirVpoc = vdir;
+                    Accumulate(ref o, vdir, _vpocWeight);
+                }
+            }
+
+            // Score auf Anteil der AKTIVEN Gewichte normieren (0-100 %).
+            int totalW = TotalEnabledWeight();
+            if (totalW > 0)
+            {
+                o.Bull = (int)Math.Round(100.0 * o.Bull / totalW);
+                o.Bear = (int)Math.Round(100.0 * o.Bear / totalW);
+            }
+
             return o;
+        }
+
+        private int TotalEnabledWeight()
+        {
+            int w = 0;
+            if (_deltaEnabled) w += _deltaWeight;
+            if (_volEnabled) w += _volWeight;
+            if (_absEnabled) w += _absWeight;
+            if (_vwapEnabled) w += _vwapWeight;
+            if (_imbEnabled) w += _imbWeight;
+            if (_vpocEnabled) w += _vpocWeight;
+            return w;
         }
 
         private static void Accumulate(ref EvalOut o, int dir, int weight)
@@ -547,6 +631,58 @@ namespace OrderflowSignal
                     best = d;
             }
             return any ? best : c.Delta;
+        }
+
+        // Diagonale Imbalances zaehlen: Buy = Ask[p] >= Ratio * Bid[p-Tick],
+        // Sell = Bid[p] >= Ratio * Ask[p+Tick]. Aktiv, wenn eine Seite >= minCount
+        // erreicht und dominiert. Richtung = dominante Stapelseite.
+        private static bool EvaluateImbalance(IndicatorCandle c, decimal tick, decimal ratio, int minCount, out int dir)
+        {
+            dir = 0;
+            var bid = new Dictionary<decimal, decimal>();
+            var ask = new Dictionary<decimal, decimal>();
+            foreach (var pv in c.GetAllPriceLevels())
+            {
+                bid[pv.Price] = pv.Bid;
+                ask[pv.Price] = pv.Ask;
+            }
+            if (bid.Count == 0)
+                return false;
+
+            int buy = 0, sell = 0;
+            foreach (var kv in ask)
+            {
+                if (bid.TryGetValue(kv.Key - tick, out var bBelow) && bBelow > 0 && kv.Value >= ratio * bBelow)
+                    buy++;
+            }
+            foreach (var kv in bid)
+            {
+                if (ask.TryGetValue(kv.Key + tick, out var aAbove) && aAbove > 0 && kv.Value >= ratio * aAbove)
+                    sell++;
+            }
+
+            if (buy >= minCount && buy > sell) { dir = 1; return true; }
+            if (sell >= minCount && sell > buy) { dir = -1; return true; }
+            return false;
+        }
+
+        // POC (Preislevel mit max. Volumen) relativ zum Kerzenkoerper.
+        // Unterer Docht = bullishe Rejection (+1), oberer Docht = bearish (-1).
+        private static int VpocWickDir(IndicatorCandle c)
+        {
+            decimal pocPrice = 0, pocVol = -1;
+            foreach (var pv in c.GetAllPriceLevels())
+            {
+                if (pv.Volume > pocVol) { pocVol = pv.Volume; pocPrice = pv.Price; }
+            }
+            if (pocVol < 0)
+                return 0;
+
+            decimal bodyHi = Math.Max(c.Open, c.Close);
+            decimal bodyLo = Math.Min(c.Open, c.Close);
+            if (pocPrice > bodyHi) return -1;
+            if (pocPrice < bodyLo) return 1;
+            return 0;
         }
 
         private static decimal BarPriceForVwap(IndicatorCandle c)
