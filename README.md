@@ -58,9 +58,15 @@ heben sich Momentum (bearish am Tief) und Umkehr-Tells gegenseitig auf → kein 
 - **Kumulative Delta-Divergenz:** tieferes Tief, aber das CVD macht ein höheres Tief
   (netto-Kaufen während des Falls = Verkäufer erschöpfen, *obwohl* der Preis noch fällt).
   Orderflow läuft dem Preis voraus → präziser als preisbasierte Range-/Balance-Tools.
-- **Absorption am Extrem:** der Aggressor wird absorbiert.
+- **Echte Absorption am Extrem:** großes Aggressor-Delta **und** das Extrem wurde
+  *abgelehnt* (Close in der gegenüberliegenden Bar-Hälfte → Aggressor getrappt).
 - **vPOC-im-Docht:** Rejection.
 - **Exhaustion:** dünnes Aggressor-Volumen am Extrem (Bid am Tief / Ask am Hoch).
+
+**Pflicht-Treiber:** Eine Umkehr feuert nur, wenn **CVD-Divergenz ODER echte Absorption**
+vorliegt (die zwei Reversal-Archetypen: graduelle Erschöpfung vs. Klimax/Absorption).
+vPOC und Exhaustion sind nur *Bestätigung*. So fallen Trend-„Treppen" weg, die weder
+Divergenz noch echte Absorption haben.
 
 Eigener Score (0–100 %), feuert ab `Reversal-Schwelle`. Gewichte je Teil-Bedingung einstellbar.
 

@@ -845,34 +845,48 @@ namespace OrderflowSignal
             if (totalW <= 0)
                 totalW = 1;
 
+            decimal mid = (c.High + c.Low) / 2m;
+
             // Long-Umkehr: neues Tief, aber Orderflow dreht.
             if (c.Low <= minLow)
             {
-                int s = 0;
-                // Kumulative Delta-Divergenz: tieferes Tief, aber CVD hoeher
-                // (netto-Kaufen waehrend des Falls = Verkaeufer erschoepfen).
-                if (curCumDelta > cdAtLow) s += _revDivWeight;
-                if (signedMld < 0 && Math.Abs(signedMld) >= absThr) s += _revAbsWeight;    // Verkaeufer absorbiert
-                if (VpocWickDir(c) > 0) s += _revVpocWeight;                               // POC im unteren Docht
-                if (ExhaustionAtExtreme(c, true)) s += _revExhWeight;                      // duennes Verkaufsvol am Tief
-                int pct = (int)Math.Round(100.0 * s / totalW);
-                if (pct >= _reversalThreshold)
-                    return pct;
+                // Primaere Treiber (mind. einer Pflicht):
+                // (a) Kumulative Delta-Divergenz: tieferes Tief, aber CVD hoeher.
+                bool divg = curCumDelta > cdAtLow;
+                // (b) Echte Absorption: grosses Verkaeufer-Delta UND Tief abgelehnt
+                //     (Close in der oberen Bar-Haelfte) -> Aggressor getrappt.
+                bool absr = signedMld < 0 && Math.Abs(signedMld) >= absThr && c.Close >= mid;
+
+                if (divg || absr)
+                {
+                    int s = 0;
+                    if (divg) s += _revDivWeight;
+                    if (absr) s += _revAbsWeight;
+                    if (VpocWickDir(c) > 0) s += _revVpocWeight;          // POC im unteren Docht
+                    if (ExhaustionAtExtreme(c, true)) s += _revExhWeight; // duennes Verkaufsvol am Tief
+                    int pct = (int)Math.Round(100.0 * s / totalW);
+                    if (pct >= _reversalThreshold)
+                        return pct;
+                }
             }
 
             // Short-Umkehr: neues Hoch, aber Orderflow dreht.
             if (c.High >= maxHigh)
             {
-                int s = 0;
-                // Kumulative Delta-Divergenz: hoeheres Hoch, aber CVD tiefer
-                // (netto-Verkaufen waehrend des Anstiegs = Kaeufer erschoepfen).
-                if (curCumDelta < cdAtHigh) s += _revDivWeight;
-                if (signedMld > 0 && Math.Abs(signedMld) >= absThr) s += _revAbsWeight;
-                if (VpocWickDir(c) < 0) s += _revVpocWeight;
-                if (ExhaustionAtExtreme(c, false)) s += _revExhWeight;
-                int pct = (int)Math.Round(100.0 * s / totalW);
-                if (pct >= _reversalThreshold)
-                    return -pct;
+                bool divg = curCumDelta < cdAtHigh;
+                bool absr = signedMld > 0 && Math.Abs(signedMld) >= absThr && c.Close <= mid;
+
+                if (divg || absr)
+                {
+                    int s = 0;
+                    if (divg) s += _revDivWeight;
+                    if (absr) s += _revAbsWeight;
+                    if (VpocWickDir(c) < 0) s += _revVpocWeight;
+                    if (ExhaustionAtExtreme(c, false)) s += _revExhWeight;
+                    int pct = (int)Math.Round(100.0 * s / totalW);
+                    if (pct >= _reversalThreshold)
+                        return -pct;
+                }
             }
 
             return 0;
