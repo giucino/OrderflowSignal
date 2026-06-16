@@ -111,10 +111,21 @@ namespace OrderflowSignal
         // ── BALANCE-RANGE (Phase 2a) ───────────────────────────────────────
         // Value Area (VAH/VAL/vPOC) ueber ein rollendes Fenster -> zeichnet die
         // aktuelle Balance. (Reversal-Gate an den Raendern folgt in Phase 2b.)
-        private bool _rangeEnabled = true;
+        private bool _rangeEnabled = false;   // rollendes VA-Band: Default AUS (Referenz)
         private int _rangeLookback = 100;     // Bars fuer das Volumen-Profil
         private int _rangeValuePct = 70;      // Value-Area-Anteil (%)
         private bool _rangeExtendRight = true;
+
+        // ── RANGE-DETEKTOR (H-Range-Stil) ──────────────────────────────────
+        // Sucht diskrete Konsolidierungen (Balance nach Imbalance) und markiert
+        // jede als Box, gefaerbt nach Ausbruchsrichtung.
+        private bool _detectorEnabled = true;
+        private int _detectorLookback = 500;     // Bars rueckwaerts absuchen
+        private int _detectorMinBars = 10;       // Mindest-Bars fuer eine Range
+        private decimal _detectorWidthFactor = 3.0m; // max. Range-Hoehe = Faktor * Ø Bar-Range
+        private Color _colorBreakUp = Color.FromArgb(200, 60, 190, 90);   // hoch ausgebrochen
+        private Color _colorBreakDn = Color.FromArgb(200, 225, 70, 70);   // runter ausgebrochen
+        private Color _colorFlat = Color.FromArgb(170, 150, 150, 150);    // noch aktiv/flat
 
         // ─────────────────────────────────────────────────────────────────
         //  EINSTELLUNGEN — Darstellung / Farben
@@ -171,6 +182,10 @@ namespace OrderflowSignal
         private decimal _rangeVah, _rangeVal, _rangeVpoc;
         private int _rangeStartBar;
         private bool _rangeValid;
+
+        // Range-Detektor: erkannte Konsolidierungs-Boxen.
+        private struct DetRange { public int Start, End; public decimal High, Low; public int Dir; }
+        private readonly List<DetRange> _detRanges = new();
 
         // Zuletzt berechnete Schwellen (fuer HUD + Freeze-Snapshot).
         private decimal _liveVolThr, _liveDeltaThr, _liveAbsThr;
@@ -396,6 +411,34 @@ namespace OrderflowSignal
         [Display(Name = "Farbe vPOC", GroupName = "Farben", Order = 78)]
         public Color ColorRangePoc { get => _colorRangePoc; set { _colorRangePoc = value; RedrawChart(); } }
 
+        // ── Range-Detektor ─────────────────────────────────────────────────
+        [Display(Name = "Range-Detektor aktiv", GroupName = "Range-Detektor", Order = 100,
+            Description = "Diskrete Konsolidierungen (Balance nach Imbalance) erkennen und als Box markieren.")]
+        public bool DetectorEnabled { get => _detectorEnabled; set { _detectorEnabled = value; RecalculateValues(); } }
+
+        [Display(Name = "Detektor Lookback (Bars)", GroupName = "Range-Detektor", Order = 101)]
+        [Range(20, 5000)]
+        public int DetectorLookback { get => _detectorLookback; set { _detectorLookback = Math.Max(20, value); RecalculateValues(); } }
+
+        [Display(Name = "Min-Bars pro Range", GroupName = "Range-Detektor", Order = 102,
+            Description = "So viele Bars muss der Preis im engen Band bleiben, damit es als Balance zaehlt.")]
+        [Range(3, 200)]
+        public int DetectorMinBars { get => _detectorMinBars; set { _detectorMinBars = Math.Max(3, value); RecalculateValues(); } }
+
+        [Display(Name = "Breiten-Faktor (x Ø Bar-Range)", GroupName = "Range-Detektor", Order = 103,
+            Description = "Max. Range-Hoehe = Faktor * durchschnittliche Bar-Range. Kleiner = engere Balances.")]
+        [Range(0.5, 20.0)]
+        public decimal DetectorWidthFactor { get => _detectorWidthFactor; set { _detectorWidthFactor = value; RecalculateValues(); } }
+
+        [Display(Name = "Farbe Break Up", GroupName = "Farben", Order = 79)]
+        public Color ColorBreakUp { get => _colorBreakUp; set { _colorBreakUp = value; RedrawChart(); } }
+
+        [Display(Name = "Farbe Break Down", GroupName = "Farben", Order = 80)]
+        public Color ColorBreakDn { get => _colorBreakDn; set { _colorBreakDn = value; RedrawChart(); } }
+
+        [Display(Name = "Farbe Range aktiv/flat", GroupName = "Farben", Order = 81)]
+        public Color ColorFlat { get => _colorFlat; set { _colorFlat = value; RedrawChart(); } }
+
         // ─────────────────────────────────────────────────────────────────
         //  PROPERTIES — Darstellung / Farben
         // ─────────────────────────────────────────────────────────────────
@@ -476,6 +519,7 @@ namespace OrderflowSignal
 
             ComputeLive();
             ComputeBalanceRange();
+            ComputeDetectorRanges();
 
             string key = $"{_hudBull}|{_hudBear}|{_hudSignal}|{_hudRev}|{_hudTags}|{_hudWarn}|{_chartLabel}|" +
                          $"{_liveVolThr}|{_liveDeltaThr}|{_liveAbsThr}|{_freezeCalibration}|" +
@@ -523,6 +567,7 @@ namespace OrderflowSignal
             _lastSignalBar = -1;
             _lastRevBar = -1;
             _rangeValid = false;
+            _detRanges.Clear();
             // _frz* NICHT zuruecksetzen -> eingefrorene Kalibrierung ueberlebt Recalc.
             _hudBull = _hudBear = _hudSignal = _hudRev = 0;
             _hudTags = "";
@@ -889,6 +934,65 @@ namespace OrderflowSignal
             _rangeValid = _rangeVah > 0 && _rangeVal > 0;
         }
 
+        // Range-Detektor: segmentiert die letzten N Bars in Konsolidierungs-Boxen.
+        // Eine Range "laeuft", solange der Preis in einem Band <= maxWidth bleibt;
+        // bricht er aus, wird sie eingefroren und nach Richtung gefaerbt.
+        private void ComputeDetectorRanges()
+        {
+            _detRanges.Clear();
+            if (!_detectorEnabled)
+                return;
+
+            int last = CurrentBar - 1;
+            int start = Math.Max(0, last - _detectorLookback + 1);
+            if (last - start < _detectorMinBars)
+                return;
+
+            decimal sumR = 0;
+            int n = 0;
+            for (int i = start; i <= last; i++)
+            {
+                var ci = GetCandle(i);
+                if (ci != null) { sumR += ci.High - ci.Low; n++; }
+            }
+            if (n == 0)
+                return;
+            decimal maxWidth = (sumR / n) * _detectorWidthFactor;
+            if (maxWidth <= 0)
+                return;
+
+            int idx = start;
+            while (idx <= last)
+            {
+                var c0 = GetCandle(idx);
+                if (c0 == null) { idx++; continue; }
+
+                decimal hi = c0.High, lo = c0.Low;
+                int j = idx + 1;
+                while (j <= last)
+                {
+                    var cj = GetCandle(j);
+                    if (cj == null) break;
+                    decimal nh = Math.Max(hi, cj.High), nl = Math.Min(lo, cj.Low);
+                    if (nh - nl <= maxWidth) { hi = nh; lo = nl; j++; }
+                    else break;
+                }
+
+                if (j - idx >= _detectorMinBars)
+                {
+                    int dir = 0;
+                    if (j <= last)
+                    {
+                        var cb = GetCandle(j);
+                        if (cb != null) dir = cb.Close > hi ? 1 : cb.Close < lo ? -1 : 0;
+                    }
+                    _detRanges.Add(new DetRange { Start = idx, End = j - 1, High = hi, Low = lo, Dir = dir });
+                    idx = j;
+                }
+                else idx++;
+            }
+        }
+
         private static void AddCandleToHistogram(IndicatorCandle candle, Dictionary<decimal, decimal> hist)
         {
             bool any = false;
@@ -1120,6 +1224,7 @@ namespace OrderflowSignal
                 return;
 
             DrawBalanceRange(context);
+            DrawDetectorRanges(context);
 
             if (_showMarkers)
             {
@@ -1169,6 +1274,39 @@ namespace OrderflowSignal
             context.DrawString($"VAH {_rangeVah:0.##}", _font, _colorRangeEdge, xEnd - 110, yVah - 14);
             context.DrawString($"VAL {_rangeVal:0.##}", _font, _colorRangeEdge, xEnd - 110, yVal + 2);
             context.DrawString($"POC {_rangeVpoc:0.##}", _font, _colorRangePoc, xEnd - 110, yPoc - 14);
+        }
+
+        private void DrawDetectorRanges(RenderContext context)
+        {
+            if (!_detectorEnabled || _detRanges.Count == 0)
+                return;
+            if (ChartInfo?.PriceChartContainer is not { } cont)
+                return;
+
+            var region = cont.Region;
+            foreach (var r in _detRanges)
+            {
+                int x1, x2, yH, yL;
+                try
+                {
+                    x1 = cont.GetXByBar(r.Start, false);
+                    x2 = r.Dir == 0 ? region.Right : cont.GetXByBar(r.End, false);
+                    yH = cont.GetYByPrice(r.High, false);
+                    yL = cont.GetYByPrice(r.Low, false);
+                }
+                catch { continue; }
+
+                if (x2 < region.Left || x1 > region.Right)
+                    continue;
+                x1 = Math.Max(x1, region.Left);
+                x2 = Math.Min(x2, region.Right);
+                if (x2 <= x1)
+                    continue;
+
+                var col = r.Dir > 0 ? _colorBreakUp : r.Dir < 0 ? _colorBreakDn : _colorFlat;
+                int top = Math.Min(yH, yL), h = Math.Abs(yL - yH);
+                context.DrawRectangle(new RenderPen(col, 1), new Rectangle(x1, top, x2 - x1, h));
+            }
         }
 
         private void DrawMarkers(RenderContext context)
