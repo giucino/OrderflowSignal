@@ -37,10 +37,11 @@
 
 <h2>Was der Indikator macht</h2>
 <p>
-Pro Bar werden bis zu vier Orderflow-Bedingungen geprüft. Jede liefert eine <strong>Richtung</strong>
+Pro Bar werden sechs Orderflow-Bedingungen geprüft. Jede liefert eine <strong>Richtung</strong>
 (<span class="bull">bullish</span> / <span class="bear">bearish</span>) und steuert ihr <strong>Gewicht</strong>
-zur jeweiligen Seite bei. Die Summen ergeben <code>Bull</code> vs. <code>Bear</code>; ab der
-<strong>Signal-Schwelle</strong> auf der dominanten Seite feuert ein Pfeil-Marker an der Kerze.
+zur jeweiligen Seite bei. Die Summen werden auf den Anteil der <strong>aktiven</strong> Gewichte normiert
+(0–100 %); ab der <strong>Signal-Schwelle</strong> auf der dominanten Seite feuert ein Pfeil-Marker mit
+<strong>Stärke-Zahl</strong> an der Kerze.
 </p>
 <div class="note">
 <strong>Konfluenz statt Einzelsignal:</strong> Ein einzelner Trigger reicht nicht — erst wenn mehrere Bedingungen
@@ -48,24 +49,27 @@ gewichtet in <em>dieselbe</em> Richtung zeigen, entsteht ein Signal. Das ist der
 Einzel-Indikator. Anders als ein reiner „X von 9 Lichter"-Count trennt der Bull/Bear-Score sauber die Richtung.
 </div>
 
-<h2>Die vier Bedingungen</h2>
+<h2>Die sechs Bedingungen</h2>
 <table>
-  <tr><th>Bedingung</th><th>Metrik</th><th>Aktiv wenn</th><th>Richtung</th></tr>
-  <tr><td>Delta</td><td>|Candle-Delta|</td><td>≥ kalibrierte Schwelle</td><td>Vorzeichen des Deltas</td></tr>
-  <tr><td>Volumen</td><td>Candle-Volumen</td><td>≥ kalibrierte Schwelle</td><td>Kerzenkörper (Close vs Open)</td></tr>
-  <tr><td>Absorption</td><td>größtes Level-Delta (Ask−Bid je Preislevel)</td><td>≥ kalibrierte Schwelle</td><td><span class="bear">Reversal</span> gegen den Aggressor (−sign)</td></tr>
-  <tr><td>VWAP-Lage</td><td>Close vs Session-VWAP</td><td>VWAP vorhanden</td><td>über = <span class="bull">bull</span>, unter = <span class="bear">bear</span></td></tr>
+  <tr><th>Bedingung</th><th>Metrik</th><th>Aktiv wenn</th><th>Richtung</th><th>Gew.</th></tr>
+  <tr><td>Delta</td><td>|Candle-Delta|</td><td>≥ Perzentil-Schwelle</td><td>Vorzeichen des Deltas</td><td>20</td></tr>
+  <tr><td>Volumen</td><td>Candle-Volumen</td><td>≥ Perzentil-Schwelle</td><td>Kerzenkörper (Close vs Open)</td><td>15</td></tr>
+  <tr><td>Absorption</td><td>größtes Level-Delta (Ask−Bid je Preislevel)</td><td>≥ Perzentil-Schwelle</td><td><span class="bear">Reversal</span> gegen den Aggressor</td><td>20</td></tr>
+  <tr><td>VWAP-Lage</td><td>Close vs Session-VWAP</td><td>VWAP vorhanden</td><td>über = <span class="bull">bull</span>, unter = <span class="bear">bear</span></td><td>15</td></tr>
+  <tr><td>Imbalance</td><td>diagonale Ask/Bid-Imbalances (Ratio, gestapelt)</td><td>≥ Mindest-Anzahl auf einer Seite</td><td>dominante Stapelseite</td><td>15</td></tr>
+  <tr><td>vPOC-in-Wick</td><td>POC-Lage zum Kerzenkörper</td><td>POC im Docht</td><td>unten = <span class="bull">bull</span>, oben = <span class="bear">bear</span></td><td>15</td></tr>
 </table>
 <p>
-<strong>Absorption</strong> ist als <em>Reversal</em> modelliert: ein Preislevel mit großem aggressivem Delta, das
-absorbiert wird (Aggressor kommt nicht durch), spricht für die Gegenrichtung. <strong>VWAP</strong> ist ein reiner
-Bias und wird nicht kalibriert.
+<strong>Absorption</strong> ist als <em>Reversal</em> modelliert (großes Level-Delta, das absorbiert wird → Gegenrichtung).
+<strong>Imbalance</strong> und <strong>vPOC-in-Wick</strong> sind footprint-/location-basiert und damit orthogonal zu Delta/Volumen
+— sie heben echte Konfluenz vom Mitläufer ab. <strong>VWAP</strong> ist ein reiner Bias und wird nicht kalibriert.
+Gewichte summieren sich auf 100; der Score ist auf die <em>aktiven</em> Gewichte normiert (0–100 %).
 </p>
 
 <h2>Perzentil-Auto-Kalibrierung</h2>
 <p>
 Statt fester Faktoren werden die Schwellen für Delta, Volumen und Absorption als <strong>Perzentil der letzten
-<em>N</em> Bars</strong> bestimmt (Default <code>P85</code> / <code>N50</code>). Eine Bedingung feuert, wenn ihre Metrik
+<em>N</em> Bars</strong> bestimmt (Default <code>P95</code> / <code>N50</code>). Eine Bedingung feuert, wenn ihre Metrik
 in den oberen <code>(100−P)%</code> der jüngsten Bars liegt — robust gegen Ausreißer und instrument-/timeframe-agnostisch.
 </p>
 <ul>
@@ -88,15 +92,16 @@ Der <strong>Session-VWAP</strong> ankert täglich über <code>IsNewSession</code
 <h2>Anzeige</h2>
 <pre>
 ORDERFLOW (Tick 500)
-&#9650; 55    &#9660; 20            &larr; Bull- / Bear-Gewichtssumme
+&#9650; 75    &#9660; 0             &larr; Bull- / Bear-Score (0&ndash;100 %)
 SIGNAL: LONG                  &larr; LONG / SHORT / &mdash;
-&Delta;&#9650; Vol&#9650; Abs&#9660; VW&#9650;          &larr; Richtung je Bedingung
-Cal P85 N50 &#10052;             &larr; Perzentil, Fenster, Freeze-Status
+&Delta;&#9650; Vol&#9650; Abs&#183; VW&#9650; Im&#9650; vP&#183;   &larr; Richtung je Bedingung
+Cal P95 N50 &#10052;             &larr; Perzentil, Fenster, Freeze-Status
 V&ge;7611  &Delta;&ge;721  A&ge;181        &larr; aktuell kalibrierte Schwellen
 </pre>
 <p>
 Zusätzlich <strong>Pfeil-Marker</strong> an den Kerzen mit Konfluenz: <span class="bull">▲</span> unter dem Low (Long),
-<span class="bear">▼</span> über dem High (Short).
+<span class="bear">▼</span> über dem High (Short) — jeweils mit der <strong>Stärke-Zahl</strong> (Score) daneben.
+Der <strong>Min-Score-Filter</strong> (Default 60 %) zeigt nur Marker mit genug Konfluenz und blendet schwache aus.
 </p>
 
 <h2>Empfohlener Chart</h2>
@@ -113,14 +118,14 @@ Der <strong>sich bildende Bar repaintet</strong> bis zum Schluss; Marker auf abg
 <h2>Einstellungen</h2>
 <table>
   <tr><th>Gruppe</th><th>Einstellung</th></tr>
-  <tr><td>Allgemein</td><td>Lookback (N), Signal-Schwelle, Signal-Cooldown, HUD/Marker/Kalibrierung anzeigen</td></tr>
+  <tr><td>Allgemein</td><td>Lookback (N), Signal-Schwelle, Signal-Cooldown, Min-Score für Marker, HUD/Marker/Kalibrierung anzeigen</td></tr>
   <tr><td>Kalibrierung</td><td>Globaler Perzentil, Advanced-Override, Freeze, Perzentil je Bedingung</td></tr>
-  <tr><td>Bedingungen</td><td>Delta / Volumen / Absorption / VWAP — je aktiv + Gewicht</td></tr>
+  <tr><td>Bedingungen</td><td>Delta / Volumen / Absorption / VWAP / Imbalance (Ratio, Mindest-Anzahl) / vPOC — je aktiv + Gewicht</td></tr>
   <tr><td>Darstellung</td><td>Schriftgröße, Position (oben links/rechts), Abstände, Marker-Abstand (Ticks)</td></tr>
   <tr><td>Farben</td><td>Bull / Bear / Neutral / Hintergrund</td></tr>
 </table>
 <p>
-Default-Gewichte: Delta 30, Volumen 20, Absorption 25, VWAP 25 (Summe 100), Signal-Schwelle 50, Perzentil 85, Lookback 50.
+Default-Gewichte: Delta 20, Volumen 15, Absorption 20, VWAP 15, Imbalance 15, vPOC 15 (Summe 100), Signal-Schwelle 50, Min-Score 60, Perzentil 95, Lookback 50.
 </p>
 
 <h2>Kalibrierung</h2>

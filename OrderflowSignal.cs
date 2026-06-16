@@ -136,11 +136,6 @@ namespace OrderflowSignal
         private string _hudWarn = "";
         private string _chartLabel = "";
 
-        // Diagnose: ueber die abgeschlossenen Bars hinweg.
-        private int _diagSignals;   // Anzahl erzeugter Signale (Marker)
-        private int _diagMaxBull;   // hoechster jemals gesehener Bull-Score
-        private int _diagMaxBear;   // hoechster jemals gesehener Bear-Score
-
         private RenderFont _font = null!;
         private RenderFont _fontBig = null!;
         private RenderFont _fontMarker = null!;
@@ -373,9 +368,6 @@ namespace OrderflowSignal
             _lastProcessedBar = -1;
             _signals.Clear();
             _lastSignalBar = -1;
-            _diagSignals = 0;
-            _diagMaxBull = 0;
-            _diagMaxBear = 0;
             // _frz* NICHT zuruecksetzen -> eingefrorene Kalibrierung ueberlebt Recalc.
             _hudBull = _hudBear = _hudSignal = 0;
             _hudTags = "";
@@ -415,11 +407,6 @@ namespace OrderflowSignal
             SetSignal(bar, SignedScore(sig, o));
             if (sig != 0)
                 _lastSignalBar = bar;
-
-            // Diagnose mitschreiben.
-            if (o.Bull > _diagMaxBull) _diagMaxBull = o.Bull;
-            if (o.Bear > _diagMaxBear) _diagMaxBear = o.Bear;
-            if (sig != 0) _diagSignals++;
         }
 
         private void ComputeLive()
@@ -827,7 +814,6 @@ namespace OrderflowSignal
                 string frozen = _freezeCalibration ? " ❄" : "";
                 lines.Add(($"Cal P{pTxt} N{_lookback}{frozen}", _colorDim, _font));
                 lines.Add(($"V≥{_liveVolThr:0}  Δ≥{_liveDeltaThr:0}  A≥{_liveAbsThr:0}", _colorDim, _font));
-                lines.Add(($"dbg sig={_diagSignals}  Bmax={_diagMaxBull}  Smax={_diagMaxBear}", _colorDim, _font));
             }
 
             if (_hudWarn.Length > 0)
