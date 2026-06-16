@@ -101,8 +101,8 @@ namespace OrderflowSignal
         // Getrennte Umkehr-Logik (Divergenz, Absorption am Extrem, vPOC-Docht,
         // Exhaustion), nur an lokalen Extrema. Eigener Score + Rauten-Marker.
         private bool _reversalEnabled = true;
-        private int _reversalLookback = 10;   // Bars fuer Extrem-/Divergenz-Referenz
-        private int _reversalThreshold = 50;  // Mindest-Reversal-Score (%)
+        private int _reversalLookback = 14;   // Bars fuer Extrem-/Divergenz-Referenz
+        private int _reversalThreshold = 70;  // Mindest-Reversal-Score (%) -> ~3 Bedingungen
         private int _revDivWeight = 30;       // Delta-Divergenz
         private int _revAbsWeight = 30;       // Absorption am Extrem
         private int _revVpocWeight = 20;      // vPOC im Docht
@@ -150,6 +150,7 @@ namespace OrderflowSignal
 
         // Reversal: pro Bar signierter Reversal-Score (> 0 Long-Umkehr, < 0 Short).
         private readonly List<int> _revSignals = new();
+        private int _lastRevBar = -1;   // Cooldown-Tracking fuer Reversal-Marker
 
         // Zuletzt berechnete Schwellen (fuer HUD + Freeze-Snapshot).
         private decimal _liveVolThr, _liveDeltaThr, _liveAbsThr;
@@ -469,6 +470,7 @@ namespace OrderflowSignal
             _signals.Clear();
             _revSignals.Clear();
             _lastSignalBar = -1;
+            _lastRevBar = -1;
             // _frz* NICHT zuruecksetzen -> eingefrorene Kalibrierung ueberlebt Recalc.
             _hudBull = _hudBear = _hudSignal = _hudRev = 0;
             _hudTags = "";
@@ -509,7 +511,13 @@ namespace OrderflowSignal
             if (sig != 0)
                 _lastSignalBar = bar;
 
-            SetRevSignal(bar, RevEvaluate(bar, c, signedMld));
+            int rev = RevEvaluate(bar, c, signedMld);
+            if (rev != 0 && _lastRevBar >= 0 && _signalCooldownBars > 0
+                && (bar - _lastRevBar) <= _signalCooldownBars)
+                rev = 0;
+            SetRevSignal(bar, rev);
+            if (rev != 0)
+                _lastRevBar = bar;
         }
 
         private void ComputeLive()
@@ -535,6 +543,9 @@ namespace OrderflowSignal
             SetSignal(last, SignedScore(sig, o));
 
             int rev = RevEvaluate(last, c, signedMld);
+            if (rev != 0 && _lastRevBar >= 0 && _signalCooldownBars > 0
+                && (last - _lastRevBar) <= _signalCooldownBars)
+                rev = 0;
             SetRevSignal(last, rev);
             _hudRev = rev;
 
@@ -1046,15 +1057,23 @@ namespace OrderflowSignal
                 if (x < region.Left || x > region.Right)
                     continue;
 
-                string glyph = "◆";
                 var col = dir > 0 ? _colorRevBull : _colorRevBear;
-                var sz = context.MeasureString(glyph, _fontMarker);
-                int drawY = dir > 0 ? y : y - sz.Height;
-                context.DrawString(glyph, _fontMarker, col, x - sz.Width / 2, drawY);
 
+                // Raute als echtes Polygon zeichnen (Glyph ◆ rendert im ATAS-Font nicht).
+                int r = Math.Max(5, _fontSize / 2 + 1);
+                var pts = new[]
+                {
+                    new Point(x, y - r),
+                    new Point(x + r, y),
+                    new Point(x, y + r),
+                    new Point(x - r, y),
+                };
+                context.FillPolygon(col, pts);
+
+                // Staerke-Zahl: Long unter der Raute, Short darueber.
                 string num = strength.ToString();
                 var nsz = context.MeasureString(num, _font);
-                int numY = dir > 0 ? drawY + sz.Height : drawY - nsz.Height;
+                int numY = dir > 0 ? y + r + 1 : y - r - nsz.Height - 1;
                 context.DrawString(num, _font, col, x - nsz.Width / 2, numY);
             }
         }
@@ -1080,7 +1099,7 @@ namespace OrderflowSignal
             {
                 string rt = _hudRev > 0 ? "LONG" : _hudRev < 0 ? "SHORT" : "—";
                 var rc = _hudRev > 0 ? _colorRevBull : _hudRev < 0 ? _colorRevBear : _colorNeutral;
-                lines.Add(($"REV ◆ {rt} {Math.Abs(_hudRev)}", rc, _font));
+                lines.Add(($"REV: {rt} {Math.Abs(_hudRev)}", rc, _font));
             }
 
             if (_showCalibration)
