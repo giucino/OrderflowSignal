@@ -1284,13 +1284,17 @@ namespace OrderflowSignal
                 return;
 
             var region = cont.Region;
+            int lastBar = CurrentBar - 1;
             foreach (var r in _detRanges)
             {
+                // Nur die wirklich aktive Range (laeuft bis zur letzten Bar) nach
+                // rechts verlaengern; abgeschlossene Boxen enden an ihrem End.
+                bool active = r.End >= lastBar;
                 int x1, x2, yH, yL;
                 try
                 {
                     x1 = cont.GetXByBar(r.Start, false);
-                    x2 = r.Dir == 0 ? region.Right : cont.GetXByBar(r.End, false);
+                    x2 = active ? region.Right : cont.GetXByBar(r.End, false);
                     yH = cont.GetYByPrice(r.High, false);
                     yL = cont.GetYByPrice(r.Low, false);
                 }
