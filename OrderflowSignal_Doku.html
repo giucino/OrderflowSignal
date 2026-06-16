@@ -58,7 +58,13 @@ Einzel-Indikator. Anders als ein reiner „X von 9 Lichter"-Count trennt der Bul
   <tr><td>VWAP-Lage</td><td>Close vs Session-VWAP</td><td>VWAP vorhanden</td><td>über = <span class="bull">bull</span>, unter = <span class="bear">bear</span></td><td>15</td></tr>
   <tr><td>Imbalance</td><td>diagonale Ask/Bid-Imbalances (Ratio, gestapelt)</td><td>≥ Mindest-Anzahl auf einer Seite</td><td>dominante Stapelseite</td><td>15</td></tr>
   <tr><td>vPOC-in-Wick</td><td>POC-Lage zum Kerzenkörper</td><td>POC im Docht</td><td>unten = <span class="bull">bull</span>, oben = <span class="bear">bear</span></td><td>15</td></tr>
+  <tr><td>Tape / Big Trades ⚡</td><td>einzelne Cumulative-Trades ≥ Mindestgröße</td><td>Big Trade vorhanden</td><td>Buy = <span class="bull">bull</span>, Sell = <span class="bear">bear</span></td><td>15</td></tr>
 </table>
+<div class="warn">
+⚡ <strong>Tape ist LIVE-ONLY</strong> (erfasst Trades erst ab dem Laden vorwärts, keine Historie) und deshalb
+<strong>default AUS</strong>. Zum Live-Traden einschalten und <code>Tape Mindest-Kontrakte</code> pro Instrument tunen.
+Es ist die einzige <em>orthogonale</em> Bedingung (Trade-<em>Größe</em>, nicht Aggregat). Historisches Tape wäre v2.
+</div>
 <p>
 <strong>Absorption</strong> ist als <em>Reversal</em> modelliert (großes Level-Delta, das absorbiert wird → Gegenrichtung).
 <strong>Imbalance</strong> und <strong>vPOC-in-Wick</strong> sind footprint-/location-basiert und damit orthogonal zu Delta/Volumen

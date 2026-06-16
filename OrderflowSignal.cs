@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.ComponentModel.DataAnnotations;
@@ -89,6 +90,13 @@ namespace OrderflowSignal
         private bool _vpocEnabled = true;
         private int _vpocWeight = 15;
 
+        // 7) Tape / Big Trades: einzelne Cumulative-Trades >= Mindestgroesse.
+        //    Buy = bullish, Sell = bearish. LIVE-ONLY (ab Laden vorwaerts), daher
+        //    default AUS. Braucht Tick-Trade-Daten (OnCumulativeTrade).
+        private bool _tapeEnabled = false;
+        private int _tapeWeight = 15;
+        private int _tapeMinContracts = 100;
+
         // ─────────────────────────────────────────────────────────────────
         //  EINSTELLUNGEN — Darstellung / Farben
         // ─────────────────────────────────────────────────────────────────
@@ -122,6 +130,10 @@ namespace OrderflowSignal
         // Betrag = Gewichtssumme der dominanten Seite (Staerke, wie semaPHoreks Lichter-Zahl).
         private readonly List<int> _signals = new();
         private int _lastSignalBar = -1;
+
+        // Tape: pro Bar netto-signiertes Big-Trade-Volumen (Buy +, Sell -).
+        // Wird live aus OnCumulativeTrade (Fremd-Thread) befuellt -> Concurrent.
+        private readonly ConcurrentDictionary<int, int> _tapeNet = new();
 
         // Zuletzt berechnete Schwellen (fuer HUD + Freeze-Snapshot).
         private decimal _liveVolThr, _liveDeltaThr, _liveAbsThr;
@@ -275,6 +287,20 @@ namespace OrderflowSignal
         [Range(0, 100)]
         public int VpocWeight { get => _vpocWeight; set { _vpocWeight = value; RecalculateValues(); } }
 
+        [Display(Name = "Tape aktiv (LIVE-ONLY)", GroupName = "Bedingung: Tape", Order = 58,
+            Description = "Big Trades ab Mindestgroesse. Erfasst NUR live ab Laden vorwaerts (keine Historie). " +
+                          "Buy = bullish, Sell = bearish.")]
+        public bool TapeEnabled { get => _tapeEnabled; set { _tapeEnabled = value; RecalculateValues(); } }
+
+        [Display(Name = "Tape Gewicht", GroupName = "Bedingung: Tape", Order = 59)]
+        [Range(0, 100)]
+        public int TapeWeight { get => _tapeWeight; set { _tapeWeight = value; RecalculateValues(); } }
+
+        [Display(Name = "Tape Mindest-Kontrakte", GroupName = "Bedingung: Tape", Order = 60,
+            Description = "Ein einzelner Cumulative-Trade ab dieser Groesse zaehlt als Big Trade. Pro Instrument tunen.")]
+        [Range(1, 100000)]
+        public int TapeMinContracts { get => _tapeMinContracts; set { _tapeMinContracts = Math.Max(1, value); RecalculateValues(); } }
+
         // ─────────────────────────────────────────────────────────────────
         //  PROPERTIES — Darstellung / Farben
         // ─────────────────────────────────────────────────────────────────
@@ -356,6 +382,27 @@ namespace OrderflowSignal
                 _lastRenderKey = key;
                 RedrawChart();
             }
+        }
+
+        // Live-Tape: jeder Cumulative-Trade ab Mindestgroesse wird dem aktuell
+        // bildenden Bar netto-signiert gutgeschrieben (Buy +, Sell -). Laeuft auf
+        // einem Fremd-Thread -> nur in die ConcurrentDictionary schreiben, kein
+        // RedrawChart (OnCalculate liest die Werte beim naechsten Tick).
+        protected override void OnCumulativeTrade(CumulativeTrade trade)
+        {
+            if (!_tapeEnabled || trade == null || trade.Volume < _tapeMinContracts)
+                return;
+
+            int bar = CurrentBar - 1;
+            if (bar < 0)
+                return;
+
+            int signed = trade.Direction == TradeDirection.Buy ? (int)trade.Volume
+                       : trade.Direction == TradeDirection.Sell ? -(int)trade.Volume : 0;
+            if (signed == 0)
+                return;
+
+            _tapeNet.AddOrUpdate(bar, signed, (_, cur) => cur + signed);
         }
 
         private void ResetState()
@@ -442,8 +489,8 @@ namespace OrderflowSignal
             _hudBull = o.Bull;
             _hudBear = o.Bear;
             _hudSignal = sig;
-            _hudTags = $"Δ{Arrow(o.DirDelta)} Vol{Arrow(o.DirVol)} Abs{Arrow(o.DirAbs)} " +
-                       $"VW{Arrow(o.DirVwap)} Im{Arrow(o.DirImb)} vP{Arrow(o.DirVpoc)}";
+            _hudTags = $"Δ{Arrow(o.DirDelta)} Vol{Arrow(o.DirVol)} Abs{Arrow(o.DirAbs)} VW{Arrow(o.DirVwap)} " +
+                       $"Im{Arrow(o.DirImb)} vP{Arrow(o.DirVpoc)}" + (_tapeEnabled ? $" Tp{Arrow(o.DirTape)}" : "");
             _hudWarn = BuildWarning();
             _chartLabel = BuildChartLabel();
         }
@@ -454,7 +501,7 @@ namespace OrderflowSignal
         private struct EvalOut
         {
             public int Bull, Bear;
-            public int DirDelta, DirVol, DirAbs, DirVwap, DirImb, DirVpoc;
+            public int DirDelta, DirVol, DirAbs, DirVwap, DirImb, DirVpoc, DirTape;
         }
 
         private EvalOut EvaluateBar(int bar, IndicatorCandle c, decimal signedMld, decimal vwap, bool vwapValid)
@@ -518,6 +565,13 @@ namespace OrderflowSignal
                 }
             }
 
+            // 7) Tape / Big Trades (live erfasst, netto-signiert).
+            if (_tapeEnabled && _tapeNet.TryGetValue(bar, out int tnet) && tnet != 0)
+            {
+                o.DirTape = Math.Sign(tnet);
+                Accumulate(ref o, o.DirTape, _tapeWeight);
+            }
+
             // Score auf Anteil der AKTIVEN Gewichte normieren (0-100 %).
             int totalW = TotalEnabledWeight();
             if (totalW > 0)
@@ -538,6 +592,7 @@ namespace OrderflowSignal
             if (_vwapEnabled) w += _vwapWeight;
             if (_imbEnabled) w += _imbWeight;
             if (_vpocEnabled) w += _vpocWeight;
+            if (_tapeEnabled) w += _tapeWeight;
             return w;
         }
 

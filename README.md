@@ -26,6 +26,11 @@ der dominanten Seite feuert ein Marker, dessen **Stärke-Zahl** den Score zeigt.
 | 4 | **VWAP-Lage** | Close vs Session-VWAP | VWAP vorhanden | über/unter VWAP | 15 |
 | 5 | **Imbalance** | diagonale Ask/Bid-Imbalances (Ratio, gestapelt) | ≥ Mindest-Anzahl auf einer Seite | dominante Stapelseite | 15 |
 | 6 | **vPOC-in-Wick** | POC-Lage zum Kerzenkörper | POC im Docht | unterer Docht = bull, oberer = bear | 15 |
+| 7 | **Tape / Big Trades** ⚡ | einzelne Cumulative-Trades ≥ Mindestgröße | Big Trade vorhanden | Buy = bull, Sell = bear | 15 |
+
+⚡ **Tape ist LIVE-ONLY** (erfasst Trades erst ab dem Laden vorwärts, keine Historie) und
+deshalb **default AUS**. Zum Live-Traden einschalten + `Tape Mindest-Kontrakte` pro Instrument
+tunen. Die orthogonale Bedingung (Trade-*Größe*, nicht Aggregat).
 
 Gewichte summieren sich auf 100; der Score ist auf die aktiven Gewichte normiert,
 bleibt also 0–100 % egal welche/wie viele Bedingungen aktiv sind.
@@ -73,7 +78,7 @@ kalibrierte Schwellen wie ein „Result"-Panel) **+ Pfeil-Marker** mit Stärke-Z
 |---|---|
 | Allgemein | Lookback, Signal-Schwelle, Signal-Cooldown, Min-Score, HUD/Marker/Kalibrierung an |
 | Kalibrierung | Globaler Perzentil, Advanced-Override, Freeze, Perzentil je Bedingung |
-| Bedingungen | Delta / Volumen / Absorption / VWAP / Imbalance (Ratio, Anzahl) / vPOC — je aktiv + Gewicht |
+| Bedingungen | Delta / Volumen / Absorption / VWAP / Imbalance (Ratio, Anzahl) / vPOC / Tape (Min-Kontrakte) — je aktiv + Gewicht |
 | Darstellung | Schriftgröße, Position, Abstände, Marker-Abstand |
 | Farben | Bull / Bear / Neutral / Hintergrund |
 
@@ -86,8 +91,9 @@ vPOC 15 (Summe 100), Signal-Schwelle 50, Min-Score 60, Perzentil 95, Lookback 50
 - Absorption ist als **Reversal** modelliert (Aggressor absorbiert → Gegenrichtung).
 - Auf Charts ohne Footprint-Daten nutzen die Footprint-Bedingungen Fallbacks (Candle-Delta);
   Imbalance/vPOC benötigen Cluster-Daten und eine gültige Tick-Größe.
-- Noch nicht enthalten (bewusst): **Tape / Big Trades** (braucht Tick-Trade-Daten, Phase 3),
-  **Finished Business** (unscharf definiert).
+- **Tape** ist live-only (v1). Historisches Tape (via `RequestForCumulativeTrades`, wie
+  semaPHoreks „Get Historical Data") wäre v2.
+- Noch nicht enthalten (bewusst): **Finished Business** (unscharf definiert).
 
 ## Build & Installation
 
