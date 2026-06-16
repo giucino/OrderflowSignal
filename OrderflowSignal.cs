@@ -34,6 +34,10 @@ namespace OrderflowSignal
         private bool _showCalibration = true;
         private bool _freezeCalibration = false;
 
+        // Nur Marker mit Score >= diesem Wert zeichnen. 60 = mind. 3 Bedingungen
+        // ausgerichtet (filtert die schwachen 50/55-Zweier-Konfluenzen weg).
+        private int _minMarkerScore = 60;
+
         // ─────────────────────────────────────────────────────────────────
         //  EINSTELLUNGEN — Kalibrierung (Perzentil)
         // ─────────────────────────────────────────────────────────────────
@@ -98,6 +102,8 @@ namespace OrderflowSignal
         private decimal _cumPv, _cumVol;
 
         private int _lastProcessedBar = -1;
+        // Pro Bar gespeicherter SIGNIERTER Score: > 0 Long, < 0 Short, 0 keins.
+        // Betrag = Gewichtssumme der dominanten Seite (Staerke, wie semaPHoreks Lichter-Zahl).
         private readonly List<int> _signals = new();
         private int _lastSignalBar = -1;
 
@@ -113,6 +119,11 @@ namespace OrderflowSignal
         private string _hudTags = "";
         private string _hudWarn = "";
         private string _chartLabel = "";
+
+        // Diagnose: ueber die abgeschlossenen Bars hinweg.
+        private int _diagSignals;   // Anzahl erzeugter Signale (Marker)
+        private int _diagMaxBull;   // hoechster jemals gesehener Bull-Score
+        private int _diagMaxBear;   // hoechster jemals gesehener Bear-Score
 
         private RenderFont _font = null!;
         private RenderFont _fontBig = null!;
@@ -145,6 +156,12 @@ namespace OrderflowSignal
 
         [Display(Name = "Kalibrierung im HUD zeigen", GroupName = "Allgemein", Order = 6)]
         public bool ShowCalibration { get => _showCalibration; set { _showCalibration = value; RedrawChart(); } }
+
+        [Display(Name = "Min-Score für Marker", GroupName = "Allgemein", Order = 7,
+            Description = "Nur Marker mit Score >= diesem Wert zeichnen. 60 = mind. 3 Bedingungen " +
+                          "ausgerichtet (versteckt die schwachen 50/55). 0 = alle.")]
+        [Range(0, 100)]
+        public int MinMarkerScore { get => _minMarkerScore; set { _minMarkerScore = Math.Clamp(value, 0, 100); RedrawChart(); } }
 
         // ─────────────────────────────────────────────────────────────────
         //  PROPERTIES — Kalibrierung
@@ -315,6 +332,9 @@ namespace OrderflowSignal
             _lastProcessedBar = -1;
             _signals.Clear();
             _lastSignalBar = -1;
+            _diagSignals = 0;
+            _diagMaxBull = 0;
+            _diagMaxBear = 0;
             // _frz* NICHT zuruecksetzen -> eingefrorene Kalibrierung ueberlebt Recalc.
             _hudBull = _hudBear = _hudSignal = 0;
             _hudTags = "";
@@ -351,9 +371,14 @@ namespace OrderflowSignal
                 && (bar - _lastSignalBar) <= _signalCooldownBars)
                 sig = 0;
 
-            SetSignal(bar, sig);
+            SetSignal(bar, SignedScore(sig, o));
             if (sig != 0)
                 _lastSignalBar = bar;
+
+            // Diagnose mitschreiben.
+            if (o.Bull > _diagMaxBull) _diagMaxBull = o.Bull;
+            if (o.Bear > _diagMaxBear) _diagMaxBear = o.Bear;
+            if (sig != 0) _diagSignals++;
         }
 
         private void ComputeLive()
@@ -376,7 +401,7 @@ namespace OrderflowSignal
             if (sig != 0 && _lastSignalBar >= 0 && _signalCooldownBars > 0
                 && (last - _lastSignalBar) <= _signalCooldownBars)
                 sig = 0;
-            SetSignal(last, sig);
+            SetSignal(last, SignedScore(sig, o));
 
             // Schwellen rollend halten, solange nicht eingefroren.
             if (!_freezeCalibration)
@@ -457,6 +482,11 @@ namespace OrderflowSignal
             if (bear >= _signalThreshold && bear > bull) return -1;
             return 0;
         }
+
+        // Signierter Score fuer die Speicherung: Richtung * Gewichtssumme der
+        // dominanten Seite. 0 wenn kein Signal.
+        private static int SignedScore(int dir, EvalOut o)
+            => dir > 0 ? o.Bull : dir < 0 ? -o.Bear : 0;
 
         // Liefert die Schwellen fuer einen Bar. Eingefroren -> feste Snapshots,
         // sonst rollendes Perzentil ueber [bar-Lookback, bar-1]. false in der
@@ -583,35 +613,57 @@ namespace OrderflowSignal
 
         private void DrawMarkers(RenderContext context)
         {
-            var pc = ChartInfo?.PriceChartContainer;
-            if (pc == null)
+            if (ChartInfo?.PriceChartContainer is not { } cont)
                 return;
 
+            var region = cont.Region;
             decimal tick = InstrumentInfo?.TickSize ?? 0m;
             decimal offset = tick * _markerTickOffset;
+            int lastBar = CurrentBar - 1;
             int from = Math.Max(0, FirstVisibleBarNumber);
-            int to = Math.Min(CurrentBar - 1, LastVisibleBarNumber);
+            int to = Math.Min(lastBar, LastVisibleBarNumber);
 
             for (int b = from; b <= to; b++)
             {
-                int s = GetSignal(b);
-                if (s == 0)
+                int v = GetSignal(b);
+                if (v == 0)
                     continue;
 
                 var c = GetCandle(b);
                 if (c == null)
                     continue;
 
-                decimal price = s > 0 ? c.Low - offset : c.High + offset;
-                int x = pc.GetXByBarNumber(b);
-                int y = pc.GetYByPrice(price, true);
+                int dir = Math.Sign(v);
+                int strength = Math.Abs(v);
+                if (strength < _minMarkerScore)
+                    continue;
 
-                string glyph = s > 0 ? "▲" : "▼";
-                var col = s > 0 ? _colorBull : _colorBear;
+                decimal price = dir > 0 ? c.Low - offset : c.High + offset;
+
+                int x, y;
+                try
+                {
+                    x = cont.GetXByBar(b, false);
+                    y = cont.GetYByPrice(price, false);
+                }
+                catch { continue; }
+
+                if (x < region.Left || x > region.Right)
+                    continue;
+
+                string glyph = dir > 0 ? "▲" : "▼";
+                var col = dir > 0 ? _colorBull : _colorBear;
                 var sz = context.MeasureString(glyph, _fontMarker);
 
-                int drawY = s > 0 ? y : y - sz.Height;
+                // Long-Pfeil unter dem Low (Oberkante an y), Short-Pfeil ueber dem High.
+                int drawY = dir > 0 ? y : y - sz.Height;
                 context.DrawString(glyph, _fontMarker, col, x - sz.Width / 2, drawY);
+
+                // Staerke-Zahl (Score) wie semaPHoreks Lichter-Zahl: Long darunter, Short darueber.
+                string num = strength.ToString();
+                var nsz = context.MeasureString(num, _font);
+                int numY = dir > 0 ? drawY + sz.Height : drawY - nsz.Height;
+                context.DrawString(num, _font, col, x - nsz.Width / 2, numY);
             }
         }
 
@@ -639,6 +691,7 @@ namespace OrderflowSignal
                 string frozen = _freezeCalibration ? " ❄" : "";
                 lines.Add(($"Cal P{pTxt} N{_lookback}{frozen}", _colorDim, _font));
                 lines.Add(($"V≥{_liveVolThr:0}  Δ≥{_liveDeltaThr:0}  A≥{_liveAbsThr:0}", _colorDim, _font));
+                lines.Add(($"dbg sig={_diagSignals}  Bmax={_diagMaxBull}  Smax={_diagMaxBear}", _colorDim, _font));
             }
 
             if (_hudWarn.Length > 0)
