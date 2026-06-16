@@ -47,6 +47,21 @@ Import; läuft live auf jedem Chart, kein Template-Sprawl.)
 - **Freeze:** friert die aktuellen Schwellen ein (wie ein Session-Template, z.B. London / NY).
 - **Basic / Advanced:** ein globaler Perzentil, optional pro Bedingung übersteuerbar.
 
+### Reversal-Engine (getrennt vom Momentum)
+
+Die sechs Bedingungen oben modellieren **Momentum/Continuation** — an echten Umkehrpunkten
+heben sich Momentum (bearish am Tief) und Umkehr-Tells gegenseitig auf → kein Signal. Die
+**Reversal-Engine** rechnet diese Umkehr-Logik **getrennt** und zeichnet einen eigenen
+**Rauten-Marker** (◆, türkis = Long-Umkehr am Tief, orange = Short-Umkehr am Hoch):
+
+- Greift nur an **lokalen Extrema** (neues Tief/Hoch über `Reversal Lookback` Bars).
+- **Delta-Divergenz:** neues Tief, aber Delta stärker als am vorigen Tief (Verkäufer erschöpft).
+- **Absorption am Extrem:** der Aggressor wird absorbiert.
+- **vPOC-im-Docht:** Rejection.
+- **Exhaustion:** dünnes Aggressor-Volumen am Extrem (Bid am Tief / Ask am Hoch).
+
+Eigener Score (0–100 %), feuert ab `Reversal-Schwelle`. Gewichte je Teil-Bedingung einstellbar.
+
 ### Signalqualität
 
 - **Min-Score-Filter** (Default 60 %): blendet schwache Signale (z.B. nur VWAP + eine
@@ -79,6 +94,7 @@ kalibrierte Schwellen wie ein „Result"-Panel) **+ Pfeil-Marker** mit Stärke-Z
 | Allgemein | Lookback, Signal-Schwelle, Signal-Cooldown, Min-Score, HUD/Marker/Kalibrierung an |
 | Kalibrierung | Globaler Perzentil, Advanced-Override, Freeze, Perzentil je Bedingung |
 | Bedingungen | Delta / Volumen / Absorption / VWAP / Imbalance (Ratio, Anzahl) / vPOC / Tape (Min-Kontrakte) — je aktiv + Gewicht |
+| Reversal | aktiv, Lookback, Schwelle, Gewichte (Divergenz / Absorption / vPOC / Exhaustion) |
 | Darstellung | Schriftgröße, Position, Abstände, Marker-Abstand |
 | Farben | Bull / Bear / Neutral / Hintergrund |
 

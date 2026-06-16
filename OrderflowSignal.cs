@@ -97,6 +97,17 @@ namespace OrderflowSignal
         private int _tapeWeight = 15;
         private int _tapeMinContracts = 100;
 
+        // ── REVERSAL-ENGINE ────────────────────────────────────────────────
+        // Getrennte Umkehr-Logik (Divergenz, Absorption am Extrem, vPOC-Docht,
+        // Exhaustion), nur an lokalen Extrema. Eigener Score + Rauten-Marker.
+        private bool _reversalEnabled = true;
+        private int _reversalLookback = 10;   // Bars fuer Extrem-/Divergenz-Referenz
+        private int _reversalThreshold = 50;  // Mindest-Reversal-Score (%)
+        private int _revDivWeight = 30;       // Delta-Divergenz
+        private int _revAbsWeight = 30;       // Absorption am Extrem
+        private int _revVpocWeight = 20;      // vPOC im Docht
+        private int _revExhWeight = 20;       // Exhaustion (duennes Aggressor-Vol)
+
         // ─────────────────────────────────────────────────────────────────
         //  EINSTELLUNGEN — Darstellung / Farben
         // ─────────────────────────────────────────────────────────────────
@@ -113,6 +124,8 @@ namespace OrderflowSignal
         private Color _colorText = Color.FromArgb(235, 220, 225, 235);
         private Color _colorWarn = Color.FromArgb(235, 235, 150, 45);
         private Color _colorDim = Color.FromArgb(190, 140, 150, 170);
+        private Color _colorRevBull = Color.FromArgb(235, 70, 220, 220);   // Reversal Long = tuerkis
+        private Color _colorRevBear = Color.FromArgb(235, 240, 140, 40);   // Reversal Short = orange
 
         // ─────────────────────────────────────────────────────────────────
         //  STATE
@@ -135,6 +148,9 @@ namespace OrderflowSignal
         // Wird live aus OnCumulativeTrade (Fremd-Thread) befuellt -> Concurrent.
         private readonly ConcurrentDictionary<int, int> _tapeNet = new();
 
+        // Reversal: pro Bar signierter Reversal-Score (> 0 Long-Umkehr, < 0 Short).
+        private readonly List<int> _revSignals = new();
+
         // Zuletzt berechnete Schwellen (fuer HUD + Freeze-Snapshot).
         private decimal _liveVolThr, _liveDeltaThr, _liveAbsThr;
         // Eingefrorene Schwellen (gehalten, solange Freeze aktiv ist).
@@ -143,7 +159,7 @@ namespace OrderflowSignal
         private string _lastRenderKey = "";
 
         // Gerenderte HUD-Werte.
-        private int _hudBull, _hudBear, _hudSignal;
+        private int _hudBull, _hudBear, _hudSignal, _hudRev;
         private string _hudTags = "";
         private string _hudWarn = "";
         private string _chartLabel = "";
@@ -301,6 +317,37 @@ namespace OrderflowSignal
         [Range(1, 100000)]
         public int TapeMinContracts { get => _tapeMinContracts; set { _tapeMinContracts = Math.Max(1, value); RecalculateValues(); } }
 
+        // ── Reversal-Engine ────────────────────────────────────────────────
+        [Display(Name = "Reversal aktiv", GroupName = "Reversal", Order = 80,
+            Description = "Eigene Umkehr-Logik an lokalen Extrema (Divergenz, Absorption, vPOC-Docht, Exhaustion). Eigener Rauten-Marker.")]
+        public bool ReversalEnabled { get => _reversalEnabled; set { _reversalEnabled = value; RecalculateValues(); } }
+
+        [Display(Name = "Reversal Lookback (Bars)", GroupName = "Reversal", Order = 81,
+            Description = "Fenster fuer Extrem-/Divergenz-Referenz: neues Tief/Hoch ueber so viele Bars = Umkehr-Kandidat.")]
+        [Range(2, 200)]
+        public int ReversalLookback { get => _reversalLookback; set { _reversalLookback = Math.Max(2, value); RecalculateValues(); } }
+
+        [Display(Name = "Reversal-Schwelle (%)", GroupName = "Reversal", Order = 82,
+            Description = "Mindest-Reversal-Score, damit eine Raute feuert.")]
+        [Range(0, 100)]
+        public int ReversalThreshold { get => _reversalThreshold; set { _reversalThreshold = Math.Clamp(value, 0, 100); RecalculateValues(); } }
+
+        [Display(Name = "Gewicht Delta-Divergenz", GroupName = "Reversal", Order = 83)]
+        [Range(0, 100)]
+        public int RevDivWeight { get => _revDivWeight; set { _revDivWeight = value; RecalculateValues(); } }
+
+        [Display(Name = "Gewicht Absorption am Extrem", GroupName = "Reversal", Order = 84)]
+        [Range(0, 100)]
+        public int RevAbsWeight { get => _revAbsWeight; set { _revAbsWeight = value; RecalculateValues(); } }
+
+        [Display(Name = "Gewicht vPOC-im-Docht", GroupName = "Reversal", Order = 85)]
+        [Range(0, 100)]
+        public int RevVpocWeight { get => _revVpocWeight; set { _revVpocWeight = value; RecalculateValues(); } }
+
+        [Display(Name = "Gewicht Exhaustion", GroupName = "Reversal", Order = 86)]
+        [Range(0, 100)]
+        public int RevExhWeight { get => _revExhWeight; set { _revExhWeight = value; RecalculateValues(); } }
+
         // ─────────────────────────────────────────────────────────────────
         //  PROPERTIES — Darstellung / Farben
         // ─────────────────────────────────────────────────────────────────
@@ -334,6 +381,12 @@ namespace OrderflowSignal
 
         [Display(Name = "Hintergrund", GroupName = "Farben", Order = 73)]
         public Color ColorBackground { get => _colorBackground; set { _colorBackground = value; RedrawChart(); } }
+
+        [Display(Name = "Farbe Reversal Long", GroupName = "Farben", Order = 74)]
+        public Color ColorRevBull { get => _colorRevBull; set { _colorRevBull = value; RedrawChart(); } }
+
+        [Display(Name = "Farbe Reversal Short", GroupName = "Farben", Order = 75)]
+        public Color ColorRevBear { get => _colorRevBear; set { _colorRevBear = value; RedrawChart(); } }
 
         // ─────────────────────────────────────────────────────────────────
         //  CTOR
@@ -375,7 +428,7 @@ namespace OrderflowSignal
 
             ComputeLive();
 
-            string key = $"{_hudBull}|{_hudBear}|{_hudSignal}|{_hudTags}|{_hudWarn}|{_chartLabel}|" +
+            string key = $"{_hudBull}|{_hudBear}|{_hudSignal}|{_hudRev}|{_hudTags}|{_hudWarn}|{_chartLabel}|" +
                          $"{_liveVolThr}|{_liveDeltaThr}|{_liveAbsThr}|{_freezeCalibration}|{CurrentBar}";
             if (key != _lastRenderKey)
             {
@@ -414,9 +467,10 @@ namespace OrderflowSignal
             _cumVol = 0;
             _lastProcessedBar = -1;
             _signals.Clear();
+            _revSignals.Clear();
             _lastSignalBar = -1;
             // _frz* NICHT zuruecksetzen -> eingefrorene Kalibrierung ueberlebt Recalc.
-            _hudBull = _hudBear = _hudSignal = 0;
+            _hudBull = _hudBear = _hudSignal = _hudRev = 0;
             _hudTags = "";
             _hudWarn = "";
             _chartLabel = "";
@@ -454,6 +508,8 @@ namespace OrderflowSignal
             SetSignal(bar, SignedScore(sig, o));
             if (sig != 0)
                 _lastSignalBar = bar;
+
+            SetRevSignal(bar, RevEvaluate(bar, c, signedMld));
         }
 
         private void ComputeLive()
@@ -477,6 +533,10 @@ namespace OrderflowSignal
                 && (last - _lastSignalBar) <= _signalCooldownBars)
                 sig = 0;
             SetSignal(last, SignedScore(sig, o));
+
+            int rev = RevEvaluate(last, c, signedMld);
+            SetRevSignal(last, rev);
+            _hudRev = rev;
 
             // Schwellen rollend halten, solange nicht eingefroren.
             if (!_freezeCalibration)
@@ -727,6 +787,93 @@ namespace OrderflowSignal
             return 0;
         }
 
+        // ─────────────────────────────────────────────────────────────────
+        //  REVERSAL-ENGINE
+        // ─────────────────────────────────────────────────────────────────
+        // Liefert den signierten Reversal-Score: > 0 Long-Umkehr (am Tief),
+        // < 0 Short-Umkehr (am Hoch), 0 = keine. Gated auf neue lokale Extrema.
+        private int RevEvaluate(int bar, IndicatorCandle c, decimal signedMld)
+        {
+            if (!_reversalEnabled)
+                return 0;
+
+            int start = bar - _reversalLookback;
+            if (start < 0)
+                return 0;
+            if (!Thresholds(bar, out _, out _, out decimal absThr))
+                return 0;
+
+            // Referenz-Extrema (mit Delta am jeweiligen Extrem) ueber das Fenster.
+            decimal minLow = decimal.MaxValue, maxHigh = decimal.MinValue;
+            decimal dAtLow = 0, dAtHigh = 0;
+            for (int i = start; i < bar; i++)
+            {
+                var ci = GetCandle(i);
+                if (ci == null)
+                    return 0;
+                if (ci.Low < minLow) { minLow = ci.Low; dAtLow = ci.Delta; }
+                if (ci.High > maxHigh) { maxHigh = ci.High; dAtHigh = ci.Delta; }
+            }
+
+            int totalW = _revDivWeight + _revAbsWeight + _revVpocWeight + _revExhWeight;
+            if (totalW <= 0)
+                totalW = 1;
+
+            // Long-Umkehr: neues Tief, aber Orderflow dreht.
+            if (c.Low <= minLow)
+            {
+                int s = 0;
+                if (c.Delta > dAtLow) s += _revDivWeight;                                  // Delta-Divergenz
+                if (signedMld < 0 && Math.Abs(signedMld) >= absThr) s += _revAbsWeight;    // Verkaeufer absorbiert
+                if (VpocWickDir(c) > 0) s += _revVpocWeight;                               // POC im unteren Docht
+                if (ExhaustionAtExtreme(c, true)) s += _revExhWeight;                      // duennes Verkaufsvol am Tief
+                int pct = (int)Math.Round(100.0 * s / totalW);
+                if (pct >= _reversalThreshold)
+                    return pct;
+            }
+
+            // Short-Umkehr: neues Hoch, aber Orderflow dreht.
+            if (c.High >= maxHigh)
+            {
+                int s = 0;
+                if (c.Delta < dAtHigh) s += _revDivWeight;
+                if (signedMld > 0 && Math.Abs(signedMld) >= absThr) s += _revAbsWeight;
+                if (VpocWickDir(c) < 0) s += _revVpocWeight;
+                if (ExhaustionAtExtreme(c, false)) s += _revExhWeight;
+                int pct = (int)Math.Round(100.0 * s / totalW);
+                if (pct >= _reversalThreshold)
+                    return -pct;
+            }
+
+            return 0;
+        }
+
+        // Exhaustion: am Extrem-Preislevel ist das Aggressor-Volumen duenn
+        // (am Tief = Bid/Verkaufen, am Hoch = Ask/Kaufen) relativ zum Bar-Schnitt.
+        private static bool ExhaustionAtExtreme(IndicatorCandle c, bool atLow)
+        {
+            decimal extPrice = atLow ? decimal.MaxValue : decimal.MinValue;
+            decimal aggrAtExt = 0, total = 0;
+            int n = 0;
+            foreach (var pv in c.GetAllPriceLevels())
+            {
+                total += pv.Volume;
+                n++;
+                if (atLow)
+                {
+                    if (pv.Price < extPrice) { extPrice = pv.Price; aggrAtExt = pv.Bid; }
+                }
+                else
+                {
+                    if (pv.Price > extPrice) { extPrice = pv.Price; aggrAtExt = pv.Ask; }
+                }
+            }
+            if (n == 0)
+                return false;
+            decimal avg = total / n;
+            return avg > 0 && aggrAtExt <= 0.5m * avg;
+        }
+
         private static decimal BarPriceForVwap(IndicatorCandle c)
             => c.VWAP > 0 ? c.VWAP : (c.High + c.Low + c.Close) / 3m;
 
@@ -749,6 +896,16 @@ namespace OrderflowSignal
 
         private int GetSignal(int bar)
             => bar >= 0 && bar < _signals.Count ? _signals[bar] : 0;
+
+        private void SetRevSignal(int bar, int v)
+        {
+            while (_revSignals.Count <= bar)
+                _revSignals.Add(0);
+            _revSignals[bar] = v;
+        }
+
+        private int GetRevSignal(int bar)
+            => bar >= 0 && bar < _revSignals.Count ? _revSignals[bar] : 0;
 
         // ─────────────────────────────────────────────────────────────────
         //  HUD-HELFER
@@ -783,7 +940,10 @@ namespace OrderflowSignal
                 return;
 
             if (_showMarkers)
+            {
                 DrawMarkers(context);
+                DrawReversalMarkers(context);
+            }
 
             if (_showHud)
                 DrawHud(context);
@@ -845,6 +1005,60 @@ namespace OrderflowSignal
             }
         }
 
+        // Reversal-Marker: Rauten (◆), getrennt von den Momentum-Pfeilen und
+        // weiter vom Kurs weg gezeichnet, damit an einer Wende beide sichtbar sind.
+        private void DrawReversalMarkers(RenderContext context)
+        {
+            if (!_reversalEnabled)
+                return;
+            if (ChartInfo?.PriceChartContainer is not { } cont)
+                return;
+
+            var region = cont.Region;
+            decimal tick = InstrumentInfo?.TickSize ?? 0m;
+            decimal offset = tick * (_markerTickOffset * 2 + 6);
+            int lastBar = CurrentBar - 1;
+            int from = Math.Max(0, FirstVisibleBarNumber);
+            int to = Math.Min(lastBar, LastVisibleBarNumber);
+
+            for (int b = from; b <= to; b++)
+            {
+                int v = GetRevSignal(b);
+                if (v == 0)
+                    continue;
+
+                var c = GetCandle(b);
+                if (c == null)
+                    continue;
+
+                int dir = Math.Sign(v);
+                int strength = Math.Abs(v);
+                decimal price = dir > 0 ? c.Low - offset : c.High + offset;
+
+                int x, y;
+                try
+                {
+                    x = cont.GetXByBar(b, false);
+                    y = cont.GetYByPrice(price, false);
+                }
+                catch { continue; }
+
+                if (x < region.Left || x > region.Right)
+                    continue;
+
+                string glyph = "◆";
+                var col = dir > 0 ? _colorRevBull : _colorRevBear;
+                var sz = context.MeasureString(glyph, _fontMarker);
+                int drawY = dir > 0 ? y : y - sz.Height;
+                context.DrawString(glyph, _fontMarker, col, x - sz.Width / 2, drawY);
+
+                string num = strength.ToString();
+                var nsz = context.MeasureString(num, _font);
+                int numY = dir > 0 ? drawY + sz.Height : drawY - nsz.Height;
+                context.DrawString(num, _font, col, x - nsz.Width / 2, numY);
+            }
+        }
+
         private void DrawHud(RenderContext context)
         {
             var sigColor = _hudSignal > 0 ? _colorBull
@@ -861,6 +1075,13 @@ namespace OrderflowSignal
                 ($"SIGNAL: {sigText}", sigColor, _font),
                 (_hudTags, _colorText, _font),
             };
+
+            if (_reversalEnabled)
+            {
+                string rt = _hudRev > 0 ? "LONG" : _hudRev < 0 ? "SHORT" : "—";
+                var rc = _hudRev > 0 ? _colorRevBull : _hudRev < 0 ? _colorRevBear : _colorNeutral;
+                lines.Add(($"REV ◆ {rt} {Math.Abs(_hudRev)}", rc, _font));
+            }
 
             if (_showCalibration)
             {

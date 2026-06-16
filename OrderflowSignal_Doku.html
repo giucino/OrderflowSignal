@@ -72,6 +72,23 @@ Es ist die einzige <em>orthogonale</em> Bedingung (Trade-<em>Größe</em>, nicht
 Gewichte summieren sich auf 100; der Score ist auf die <em>aktiven</em> Gewichte normiert (0–100 %).
 </p>
 
+<h2>Reversal-Engine</h2>
+<p>
+Die sechs Bedingungen oben modellieren <strong>Momentum/Continuation</strong>. An echten Umkehrpunkten heben sich
+Momentum (am Tief bearish) und Umkehr-Tells gegenseitig auf → kein Signal. Die <strong>Reversal-Engine</strong> rechnet
+die Umkehr-Logik <strong>getrennt</strong> und zeichnet einen eigenen <strong>Rauten-Marker</strong> (◆,
+<span style="color:#46dcdc;font-weight:600">türkis</span> = Long-Umkehr am Tief,
+<span style="color:#f08c28;font-weight:600">orange</span> = Short-Umkehr am Hoch).
+</p>
+<ul>
+  <li>Greift nur an <strong>lokalen Extrema</strong> (neues Tief/Hoch über <code>Reversal Lookback</code> Bars).</li>
+  <li><strong>Delta-Divergenz:</strong> neues Tief, aber Delta stärker als am vorigen Tief (Verkäufer erschöpft).</li>
+  <li><strong>Absorption am Extrem:</strong> der Aggressor wird absorbiert.</li>
+  <li><strong>vPOC-im-Docht:</strong> Rejection.</li>
+  <li><strong>Exhaustion:</strong> dünnes Aggressor-Volumen am Extrem (Bid am Tief / Ask am Hoch).</li>
+</ul>
+<p>Eigener Score (0–100 %), feuert ab <code>Reversal-Schwelle</code>; Gewichte je Teil-Bedingung einstellbar.</p>
+
 <h2>Perzentil-Auto-Kalibrierung</h2>
 <p>
 Statt fester Faktoren werden die Schwellen für Delta, Volumen und Absorption als <strong>Perzentil der letzten
