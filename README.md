@@ -55,7 +55,9 @@ heben sich Momentum (bearish am Tief) und Umkehr-Tells gegenseitig auf → kein 
 **Rauten-Marker** (◆, türkis = Long-Umkehr am Tief, orange = Short-Umkehr am Hoch):
 
 - Greift nur an **lokalen Extrema** (neues Tief/Hoch über `Reversal Lookback` Bars).
-- **Delta-Divergenz:** neues Tief, aber Delta stärker als am vorigen Tief (Verkäufer erschöpft).
+- **Kumulative Delta-Divergenz:** tieferes Tief, aber das CVD macht ein höheres Tief
+  (netto-Kaufen während des Falls = Verkäufer erschöpfen, *obwohl* der Preis noch fällt).
+  Orderflow läuft dem Preis voraus → präziser als preisbasierte Range-/Balance-Tools.
 - **Absorption am Extrem:** der Aggressor wird absorbiert.
 - **vPOC-im-Docht:** Rejection.
 - **Exhaustion:** dünnes Aggressor-Volumen am Extrem (Bid am Tief / Ask am Hoch).

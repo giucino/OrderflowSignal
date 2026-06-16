@@ -135,6 +135,10 @@ namespace OrderflowSignal
         private readonly List<decimal> _absDArr = new();  // |Candle-Delta|
         private readonly List<decimal> _mldArr = new();   // |max. Level-Delta|
 
+        // Kumuliertes Delta (CVD) je Bar, Session-Reset -> fuer Delta-Divergenz.
+        private readonly List<decimal> _cumDeltaArr = new();
+        private decimal _cumDeltaRun;
+
         // Session-VWAP-Akkumulation der abgeschlossenen Bars (Reset je Session).
         private decimal _cumPv, _cumVol;
 
@@ -464,6 +468,8 @@ namespace OrderflowSignal
             _volArr.Clear();
             _absDArr.Clear();
             _mldArr.Clear();
+            _cumDeltaArr.Clear();
+            _cumDeltaRun = 0;
             _cumPv = 0;
             _cumVol = 0;
             _lastProcessedBar = -1;
@@ -491,15 +497,19 @@ namespace OrderflowSignal
             StoreMetric(_absDArr, bar, Math.Abs(c.Delta));
             StoreMetric(_mldArr, bar, Math.Abs(signedMld));
 
-            // Session-VWAP fortschreiben.
+            // Session-VWAP + kumuliertes Delta (CVD) fortschreiben.
             if (IsNewSession(bar))
             {
                 _cumPv = 0;
                 _cumVol = 0;
+                _cumDeltaRun = 0;
             }
             _cumPv += BarPriceForVwap(c) * c.Volume;
             _cumVol += c.Volume;
             decimal vwap = _cumVol > 0 ? _cumPv / _cumVol : 0;
+
+            _cumDeltaRun += c.Delta;
+            StoreMetric(_cumDeltaArr, bar, _cumDeltaRun);
 
             var o = EvaluateBar(bar, c, signedMld, vwap, _cumVol > 0);
             int sig = DetermineSignal(o.Bull, o.Bear);
@@ -511,7 +521,7 @@ namespace OrderflowSignal
             if (sig != 0)
                 _lastSignalBar = bar;
 
-            int rev = RevEvaluate(bar, c, signedMld);
+            int rev = RevEvaluate(bar, c, signedMld, _cumDeltaRun);
             if (rev != 0 && _lastRevBar >= 0 && _signalCooldownBars > 0
                 && (bar - _lastRevBar) <= _signalCooldownBars)
                 rev = 0;
@@ -542,7 +552,11 @@ namespace OrderflowSignal
                 sig = 0;
             SetSignal(last, SignedScore(sig, o));
 
-            int rev = RevEvaluate(last, c, signedMld);
+            decimal baseCd = IsNewSession(last) ? 0m
+                : (last - 1 >= 0 && last - 1 < _cumDeltaArr.Count ? _cumDeltaArr[last - 1] : 0m);
+            decimal liveCumDelta = baseCd + c.Delta;
+
+            int rev = RevEvaluate(last, c, signedMld, liveCumDelta);
             if (rev != 0 && _lastRevBar >= 0 && _signalCooldownBars > 0
                 && (last - _lastRevBar) <= _signalCooldownBars)
                 rev = 0;
@@ -803,7 +817,7 @@ namespace OrderflowSignal
         // ─────────────────────────────────────────────────────────────────
         // Liefert den signierten Reversal-Score: > 0 Long-Umkehr (am Tief),
         // < 0 Short-Umkehr (am Hoch), 0 = keine. Gated auf neue lokale Extrema.
-        private int RevEvaluate(int bar, IndicatorCandle c, decimal signedMld)
+        private int RevEvaluate(int bar, IndicatorCandle c, decimal signedMld, decimal curCumDelta)
         {
             if (!_reversalEnabled)
                 return 0;
@@ -814,16 +828,17 @@ namespace OrderflowSignal
             if (!Thresholds(bar, out _, out _, out decimal absThr))
                 return 0;
 
-            // Referenz-Extrema (mit Delta am jeweiligen Extrem) ueber das Fenster.
+            // Referenz-Extrema + kumuliertes Delta (CVD) am jeweiligen Extrem.
             decimal minLow = decimal.MaxValue, maxHigh = decimal.MinValue;
-            decimal dAtLow = 0, dAtHigh = 0;
+            decimal cdAtLow = 0, cdAtHigh = 0;
             for (int i = start; i < bar; i++)
             {
                 var ci = GetCandle(i);
                 if (ci == null)
                     return 0;
-                if (ci.Low < minLow) { minLow = ci.Low; dAtLow = ci.Delta; }
-                if (ci.High > maxHigh) { maxHigh = ci.High; dAtHigh = ci.Delta; }
+                decimal cd = i < _cumDeltaArr.Count ? _cumDeltaArr[i] : 0m;
+                if (ci.Low < minLow) { minLow = ci.Low; cdAtLow = cd; }
+                if (ci.High > maxHigh) { maxHigh = ci.High; cdAtHigh = cd; }
             }
 
             int totalW = _revDivWeight + _revAbsWeight + _revVpocWeight + _revExhWeight;
@@ -834,7 +849,9 @@ namespace OrderflowSignal
             if (c.Low <= minLow)
             {
                 int s = 0;
-                if (c.Delta > dAtLow) s += _revDivWeight;                                  // Delta-Divergenz
+                // Kumulative Delta-Divergenz: tieferes Tief, aber CVD hoeher
+                // (netto-Kaufen waehrend des Falls = Verkaeufer erschoepfen).
+                if (curCumDelta > cdAtLow) s += _revDivWeight;
                 if (signedMld < 0 && Math.Abs(signedMld) >= absThr) s += _revAbsWeight;    // Verkaeufer absorbiert
                 if (VpocWickDir(c) > 0) s += _revVpocWeight;                               // POC im unteren Docht
                 if (ExhaustionAtExtreme(c, true)) s += _revExhWeight;                      // duennes Verkaufsvol am Tief
@@ -847,7 +864,9 @@ namespace OrderflowSignal
             if (c.High >= maxHigh)
             {
                 int s = 0;
-                if (c.Delta < dAtHigh) s += _revDivWeight;
+                // Kumulative Delta-Divergenz: hoeheres Hoch, aber CVD tiefer
+                // (netto-Verkaufen waehrend des Anstiegs = Kaeufer erschoepfen).
+                if (curCumDelta < cdAtHigh) s += _revDivWeight;
                 if (signedMld > 0 && Math.Abs(signedMld) >= absThr) s += _revAbsWeight;
                 if (VpocWickDir(c) < 0) s += _revVpocWeight;
                 if (ExhaustionAtExtreme(c, false)) s += _revExhWeight;
