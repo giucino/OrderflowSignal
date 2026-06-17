@@ -107,6 +107,9 @@ namespace OrderflowSignal
         private int _revAbsWeight = 30;       // Absorption am Extrem
         private int _revVpocWeight = 20;      // vPOC im Docht
         private int _revExhWeight = 20;       // Exhaustion (duennes Aggressor-Vol)
+        // 2-Kerzen-Bestaetigung: Umkehr nur, wenn die Folgekerze in Umkehr-
+        // Richtung schliesst (ISA-Prinzip). Default an.
+        private bool _revConfirm = true;
 
         // ── BALANCE-RANGE (Phase 2a) ───────────────────────────────────────
         // Value Area (VAH/VAL/vPOC) ueber ein rollendes Fenster -> zeichnet die
@@ -384,6 +387,10 @@ namespace OrderflowSignal
         [Range(0, 100)]
         public int RevExhWeight { get => _revExhWeight; set { _revExhWeight = value; RecalculateValues(); } }
 
+        [Display(Name = "Folgekerzen-Bestätigung (2-Kerzen)", GroupName = "Reversal", Order = 87,
+            Description = "Umkehr nur, wenn die naechste Kerze in Umkehr-Richtung schliesst. Hoehere Qualitaet, 1 Bar Verzoegerung.")]
+        public bool RevConfirm { get => _revConfirm; set { _revConfirm = value; RecalculateValues(); } }
+
         // ── Balance-Range ──────────────────────────────────────────────────
         [Display(Name = "Balance-Range zeichnen", GroupName = "Balance-Range", Order = 90,
             Description = "Value Area (VAH/VAL/vPOC) ueber ein rollendes Fenster zeichnen.")]
@@ -613,6 +620,8 @@ namespace OrderflowSignal
                 _lastSignalBar = bar;
 
             int rev = RevEvaluate(bar, c, signedMld, _cumDeltaRun);
+            if (rev != 0 && _revConfirm && !RevConfirmed(bar, Math.Sign(rev)))
+                rev = 0;   // 2-Kerzen-Bestaetigung fehlt
             if (rev != 0 && _lastRevBar >= 0 && _signalCooldownBars > 0
                 && (bar - _lastRevBar) <= _signalCooldownBars)
                 rev = 0;
@@ -648,6 +657,8 @@ namespace OrderflowSignal
             decimal liveCumDelta = baseCd + c.Delta;
 
             int rev = RevEvaluate(last, c, signedMld, liveCumDelta);
+            if (rev != 0 && _revConfirm)
+                rev = 0;   // Folgekerze existiert noch nicht -> erst nach Bestaetigung (naechste Bar)
             if (rev != 0 && _lastRevBar >= 0 && _signalCooldownBars > 0
                 && (last - _lastRevBar) <= _signalCooldownBars)
                 rev = 0;
@@ -1130,6 +1141,18 @@ namespace OrderflowSignal
             }
 
             return 0;
+        }
+
+        // 2-Kerzen-Bestaetigung: die Folgekerze muss in Umkehr-Richtung schliessen.
+        private bool RevConfirmed(int bar, int dir)
+        {
+            var cN = GetCandle(bar);
+            var cN1 = GetCandle(bar + 1);
+            if (cN == null || cN1 == null)
+                return false;
+            return dir > 0 ? cN1.Close > cN.Close
+                 : dir < 0 ? cN1.Close < cN.Close
+                 : false;
         }
 
         // Exhaustion: am Extrem-Preislevel ist das Aggressor-Volumen duenn
