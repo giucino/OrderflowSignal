@@ -49,7 +49,7 @@ gewichtet in <em>dieselbe</em> Richtung zeigen, entsteht ein Signal. Das ist der
 Einzel-Indikator. Anders als ein reiner „X von 9 Lichter"-Count trennt der Bull/Bear-Score sauber die Richtung.
 </div>
 
-<h2>Die sechs Bedingungen</h2>
+<h2>Die sieben Bedingungen</h2>
 <table>
   <tr><th>Bedingung</th><th>Metrik</th><th>Aktiv wenn</th><th>Richtung</th><th>Gew.</th></tr>
   <tr><td>Delta</td><td>|Candle-Delta|</td><td>≥ Perzentil-Schwelle</td><td>Vorzeichen des Deltas</td><td>20</td></tr>
@@ -90,7 +90,28 @@ die Umkehr-Logik <strong>getrennt</strong> und zeichnet einen eigenen <strong>Ra
 <p><strong>Pflicht-Treiber:</strong> Eine Umkehr feuert nur, wenn <strong>CVD-Divergenz ODER echte Absorption</strong> vorliegt
 (die zwei Reversal-Archetypen: graduelle Erschöpfung vs. Klimax/Absorption). vPOC und Exhaustion sind nur Bestätigung —
 so fallen Trend-„Treppen" weg, die weder Divergenz noch echte Absorption haben.</p>
+<p><strong>2-Kerzen-Bestätigung</strong> (<code>Folgekerzen-Bestätigung</code>, Default an): Eine Umkehr wird erst gültig,
+wenn die <strong>Folgekerze in Umkehr-Richtung schließt</strong> (Long-Raute: nächste Kerze höher; Short: tiefer).
+Kandidaten, die sofort weiterliefen, fallen raus — 1 Bar Verzögerung für deutlich höhere Qualität. Live bleibt die
+Raute „pending", bis die Bestätigungskerze schließt.</p>
 <p>Eigener Score (0–100 %), feuert ab <code>Reversal-Schwelle</code>; Gewichte je Teil-Bedingung einstellbar.</p>
+
+<h2>Range-Detektor &amp; Balance-Range</h2>
+<p>
+Der <strong>Range-Detektor</strong> (Default an) sucht <strong>diskrete Konsolidierungen</strong> (Balance nach
+Imbalance) und markiert jede als <strong>Box</strong>, gefärbt nach Ausbruchsrichtung:
+<span class="bull">grün</span> = hoch ausgebrochen, <span class="bear">rot</span> = runter, grau = noch aktiv/flat.
+Eine Range „läuft", solange der Preis ≥ <code>Min-Bars</code> in einem Band ≤ <code>Breiten-Faktor</code> × Ø-Bar-Range
+bleibt; bricht er aus, wird die Box eingefroren und gefärbt. Adaptive Breite → gleich auf ES/NQ/Tick/Renko.
+</p>
+<p>
+Die <strong>Balance-Range</strong> (Default <em>aus</em>) zeichnet alternativ eine einzelne rollende <strong>Value Area</strong>
+(VAH/VAL/vPOC) als Band — eine Fair-Value-Referenz, kein diskreter Range-Detektor.
+</p>
+<div class="note">
+<strong>Phase 2b (offen):</strong> Reversal-Rauten nur noch an den <strong>Rändern</strong> der erkannten Ranges feuern
+lassen → echte Sniper-Entries an den Balance-Kanten.
+</div>
 
 <h2>Perzentil-Auto-Kalibrierung</h2>
 <p>
@@ -146,9 +167,12 @@ Der <strong>sich bildende Bar repaintet</strong> bis zum Schluss; Marker auf abg
   <tr><th>Gruppe</th><th>Einstellung</th></tr>
   <tr><td>Allgemein</td><td>Lookback (N), Signal-Schwelle, Signal-Cooldown, Min-Score für Marker, HUD/Marker/Kalibrierung anzeigen</td></tr>
   <tr><td>Kalibrierung</td><td>Globaler Perzentil, Advanced-Override, Freeze, Perzentil je Bedingung</td></tr>
-  <tr><td>Bedingungen</td><td>Delta / Volumen / Absorption / VWAP / Imbalance (Ratio, Mindest-Anzahl) / vPOC — je aktiv + Gewicht</td></tr>
+  <tr><td>Bedingungen</td><td>Delta / Volumen / Absorption / VWAP / Imbalance (Ratio, Mindest-Anzahl) / vPOC / Tape (Min-Kontrakte) — je aktiv + Gewicht</td></tr>
+  <tr><td>Reversal</td><td>aktiv, Lookback, Schwelle, Gewichte (Divergenz / Absorption / vPOC / Exhaustion), Folgekerzen-Bestätigung</td></tr>
+  <tr><td>Range-Detektor</td><td>aktiv, Lookback, Min-Bars pro Range, Breiten-Faktor</td></tr>
+  <tr><td>Balance-Range</td><td>aktiv (Default aus), Range-Lookback, Value-Area %, Linien verlängern</td></tr>
   <tr><td>Darstellung</td><td>Schriftgröße, Position (oben links/rechts), Abstände, Marker-Abstand (Ticks)</td></tr>
-  <tr><td>Farben</td><td>Bull / Bear / Neutral / Hintergrund</td></tr>
+  <tr><td>Farben</td><td>Bull / Bear / Neutral / Hintergrund / Reversal / Range-Band / Ränder / vPOC / Break Up/Down/Flat</td></tr>
 </table>
 <p>
 Default-Gewichte: Delta 20, Volumen 15, Absorption 20, VWAP 15, Imbalance 15, vPOC 15 (Summe 100), Signal-Schwelle 50, Min-Score 60, Perzentil 95, Lookback 50.

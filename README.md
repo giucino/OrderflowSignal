@@ -13,7 +13,7 @@ kein Entry-Signal.**
 
 ## Was er macht
 
-Pro Bar werden sechs Bedingungen geprüft. Jede liefert eine **Richtung** (bullish /
+Pro Bar werden bis zu sieben Bedingungen geprüft (Tape standardmäßig aus). Jede liefert eine **Richtung** (bullish /
 bearish) und steuert ihr **Gewicht** zur jeweiligen Seite bei. Die Summen werden auf
 den Anteil der **aktiven** Gewichte normiert (0–100 %); ab der **Signal-Schwelle** auf
 der dominanten Seite feuert ein Marker, dessen **Stärke-Zahl** den Score zeigt.
@@ -68,15 +68,31 @@ vorliegt (die zwei Reversal-Archetypen: graduelle Erschöpfung vs. Klimax/Absorp
 vPOC und Exhaustion sind nur *Bestätigung*. So fallen Trend-„Treppen" weg, die weder
 Divergenz noch echte Absorption haben.
 
+**2-Kerzen-Bestätigung** (`Folgekerzen-Bestätigung`, Default an): Eine Umkehr wird erst
+gültig, wenn die **Folgekerze in Umkehr-Richtung schließt** (Long-Raute: nächste Kerze
+höher; Short: tiefer). Kandidaten, die sofort weiterliefen, fallen raus — 1 Bar Verzögerung
+für deutlich höhere Qualität. Live bleibt die Raute „pending", bis die Bestätigungskerze schließt.
+
 Eigener Score (0–100 %), feuert ab `Reversal-Schwelle`. Gewichte je Teil-Bedingung einstellbar.
 
-### Balance-Range (Value Area)
+### Range-Detektor (H-Range-Stil)
+
+Sucht **diskrete Konsolidierungen** (Balance nach Imbalance) und markiert jede als **Box**,
+gefärbt nach **Ausbruchsrichtung**: grün = hoch ausgebrochen, rot = runter, grau = noch
+aktiv/flat. Eine Range „läuft", solange der Preis ≥ `Min-Bars` in einem Band ≤ `Breiten-Faktor`
+× Ø-Bar-Range bleibt; bricht er aus, wird die Box eingefroren und gefärbt. **Adaptive Breite**
+→ funktioniert auf ES/NQ/Tick/Renko gleich. Einstellbar: `Detektor Lookback`, `Min-Bars pro
+Range`, `Breiten-Faktor`. *(Default an.)*
+
+### Balance-Range (Value Area, optionale Referenz)
 
 Zeichnet die aktuelle **Value Area** (VAH/VAL/vPOC) über ein rollendes Fenster als
 schattiertes Band + Ränder + vPOC-Linie — die „Balance", in der der Preis rotiert.
 Einstellbar: `Range Lookback` (Bars fürs Profil), `Value-Area Anteil %` (Standard 70).
-*Phase 2a: nur Visualisierung/Kalibrierung.* Das Reversal-Gate an den Rändern (nur dort
-faden) folgt als Phase 2b.
+**Default AUS** (reine Fair-Value-Referenz neben dem Range-Detektor).
+
+> *Phase 2b (offen):* Reversals nur an den **Rändern** der erkannten Ranges feuern lassen
+> → echte Sniper-Entries an den Balance-Kanten.
 
 ### Signalqualität
 
@@ -110,9 +126,11 @@ kalibrierte Schwellen wie ein „Result"-Panel) **+ Pfeil-Marker** mit Stärke-Z
 | Allgemein | Lookback, Signal-Schwelle, Signal-Cooldown, Min-Score, HUD/Marker/Kalibrierung an |
 | Kalibrierung | Globaler Perzentil, Advanced-Override, Freeze, Perzentil je Bedingung |
 | Bedingungen | Delta / Volumen / Absorption / VWAP / Imbalance (Ratio, Anzahl) / vPOC / Tape (Min-Kontrakte) — je aktiv + Gewicht |
-| Reversal | aktiv, Lookback, Schwelle, Gewichte (Divergenz / Absorption / vPOC / Exhaustion) |
+| Reversal | aktiv, Lookback, Schwelle, Gewichte (Divergenz / Absorption / vPOC / Exhaustion), **Folgekerzen-Bestätigung** |
+| Range-Detektor | aktiv, Lookback, Min-Bars pro Range, Breiten-Faktor |
+| Balance-Range | aktiv (Default aus), Range-Lookback, Value-Area %, Linien verlängern |
 | Darstellung | Schriftgröße, Position, Abstände, Marker-Abstand |
-| Farben | Bull / Bear / Neutral / Hintergrund |
+| Farben | Bull / Bear / Neutral / Hintergrund / Reversal / Range-Band / Range-Ränder / vPOC / Break Up/Down/Flat |
 
 Defaults: Gewichte Delta 20 / Volumen 15 / Absorption 20 / VWAP 15 / Imbalance 15 /
 vPOC 15 (Summe 100), Signal-Schwelle 50, Min-Score 60, Perzentil 95, Lookback 50.
