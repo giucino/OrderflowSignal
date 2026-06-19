@@ -107,6 +107,8 @@ namespace OrderflowSignal
         private int _revAbsWeight = 30;       // Absorption am Extrem
         private int _revVpocWeight = 20;      // vPOC im Docht
         private int _revExhWeight = 20;       // Exhaustion (duennes Aggressor-Vol)
+        private int _revSpeedWeight = 15;     // Speed of Tape: Klimax-Spike am Extrem
+        private decimal _revSpeedFactor = 1.5m; // Spike, wenn Bar-Speed >= Faktor * Ø-Speed
         // 2-Kerzen-Bestaetigung: Umkehr nur, wenn die Folgekerze in Umkehr-
         // Richtung schliesst (ISA-Prinzip). Default an.
         private bool _revConfirm = true;
@@ -403,6 +405,16 @@ namespace OrderflowSignal
         [Display(Name = "Gewicht Exhaustion", GroupName = "Reversal", Order = 86)]
         [Range(0, 100)]
         public int RevExhWeight { get => _revExhWeight; set { _revExhWeight = value; RecalculateValues(); } }
+
+        [Display(Name = "Gewicht Speed of Tape (Klimax)", GroupName = "Reversal", Order = 86,
+            Description = "Speed-Spike am Extrem (schnelles Tape = Klimax/Kapitulation) staerkt die Umkehr. 0 = aus.")]
+        [Range(0, 100)]
+        public int RevSpeedWeight { get => _revSpeedWeight; set { _revSpeedWeight = value; RecalculateValues(); } }
+
+        [Display(Name = "Speed-Spike Faktor (x Ø-Speed)", GroupName = "Reversal", Order = 86,
+            Description = "Spike, wenn der Bar-Tape-Speed (Ticks/Sekunde) >= Faktor * Durchschnitt im Fenster.")]
+        [Range(1.0, 10.0)]
+        public decimal RevSpeedFactor { get => _revSpeedFactor; set { _revSpeedFactor = value; RecalculateValues(); } }
 
         [Display(Name = "Folgekerzen-Bestätigung (2-Kerzen)", GroupName = "Reversal", Order = 87,
             Description = "Umkehr nur, wenn die naechste Kerze in Umkehr-Richtung schliesst. Hoehere Qualitaet, 1 Bar Verzoegerung.")]
@@ -1284,9 +1296,11 @@ namespace OrderflowSignal
             if (!Thresholds(bar, out _, out _, out decimal absThr))
                 return 0;
 
-            // Referenz-Extrema + kumuliertes Delta (CVD) am jeweiligen Extrem.
+            // Referenz-Extrema + CVD am Extrem + Ø Tape-Speed im Fenster.
             decimal minLow = decimal.MaxValue, maxHigh = decimal.MinValue;
             decimal cdAtLow = 0, cdAtHigh = 0;
+            decimal sumSpeed = 0;
+            int speedN = 0;
             for (int i = start; i < bar; i++)
             {
                 var ci = GetCandle(i);
@@ -1295,11 +1309,17 @@ namespace OrderflowSignal
                 decimal cd = i < _cumDeltaArr.Count ? _cumDeltaArr[i] : 0m;
                 if (ci.Low < minLow) { minLow = ci.Low; cdAtLow = cd; }
                 if (ci.High > maxHigh) { maxHigh = ci.High; cdAtHigh = cd; }
+                sumSpeed += BarSpeed(ci);
+                speedN++;
             }
 
-            int totalW = _revDivWeight + _revAbsWeight + _revVpocWeight + _revExhWeight;
+            int totalW = _revDivWeight + _revAbsWeight + _revVpocWeight + _revExhWeight + _revSpeedWeight;
             if (totalW <= 0)
                 totalW = 1;
+
+            // Speed-Spike: Tape am Extrem deutlich schneller als der Schnitt = Klimax.
+            decimal avgSpeed = speedN > 0 ? sumSpeed / speedN : 0m;
+            bool speedSpike = avgSpeed > 0 && BarSpeed(c) >= _revSpeedFactor * avgSpeed;
 
             decimal mid = (c.High + c.Low) / 2m;
 
@@ -1320,6 +1340,7 @@ namespace OrderflowSignal
                     if (absr) s += _revAbsWeight;
                     if (VpocWickDir(c) > 0) s += _revVpocWeight;          // POC im unteren Docht
                     if (ExhaustionAtExtreme(c, true)) s += _revExhWeight; // duennes Verkaufsvol am Tief
+                    if (speedSpike) s += _revSpeedWeight;                 // Klimax-Tape am Tief
                     int pct = (int)Math.Round(100.0 * s / totalW);
                     if (pct >= _reversalThreshold)
                         return pct;
@@ -1339,6 +1360,7 @@ namespace OrderflowSignal
                     if (absr) s += _revAbsWeight;
                     if (VpocWickDir(c) < 0) s += _revVpocWeight;
                     if (ExhaustionAtExtreme(c, false)) s += _revExhWeight;
+                    if (speedSpike) s += _revSpeedWeight;                 // Klimax-Tape am Hoch
                     int pct = (int)Math.Round(100.0 * s / totalW);
                     if (pct >= _reversalThreshold)
                         return -pct;
@@ -1346,6 +1368,15 @@ namespace OrderflowSignal
             }
 
             return 0;
+        }
+
+        // Tape-Speed der Kerze: Trades pro Sekunde (Ticks / Dauer). Historisch
+        // berechenbar aus den Candle-Zeiten -> kein Live-Trade-Stream noetig.
+        private static decimal BarSpeed(IndicatorCandle c)
+        {
+            double secs = (c.LastTime - c.Time).TotalSeconds;
+            if (secs < 1) secs = 1;   // Floor gegen Division durch ~0
+            return c.Ticks / (decimal)secs;
         }
 
         // 2-Kerzen-Bestaetigung: die Folgekerze muss in Umkehr-Richtung schliessen.
