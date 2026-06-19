@@ -123,9 +123,10 @@ namespace OrderflowSignal
         // Sucht diskrete Konsolidierungen (Balance nach Imbalance) und markiert
         // jede als Box, gefaerbt nach Ausbruchsrichtung.
         private bool _detectorEnabled = true;
-        private int _detectorLookback = 500;     // Bars rueckwaerts absuchen
+        private int _detectorLookback = 500;     // Bars rueckwaerts absuchen (Start bei Recalc)
         private int _detectorMinBars = 10;       // Mindest-Bars fuer eine Range
-        private decimal _detectorWidthFactor = 3.0m; // max. Range-Hoehe = Faktor * Ø Bar-Range
+        private decimal _detectorWidthFactor = 3.0m; // max. Range-Hoehe = Faktor * ATR
+        private int _detectorAtrPeriod = 14;     // Periode der Breiten-ATR (stabil, kein Drift)
         private Color _colorBreakUp = Color.FromArgb(200, 60, 190, 90);   // hoch ausgebrochen
         private Color _colorBreakDn = Color.FromArgb(200, 225, 70, 70);   // runter ausgebrochen
         private Color _colorFlat = Color.FromArgb(170, 150, 150, 150);    // noch aktiv/flat
@@ -188,7 +189,13 @@ namespace OrderflowSignal
 
         // Range-Detektor: erkannte Konsolidierungs-Boxen.
         private struct DetRange { public int Start, End; public decimal High, Low; public int Dir; }
-        private readonly List<DetRange> _detRanges = new();
+        private readonly List<DetRange> _detRanges = new();   // EINGEFRORENE Ranges (kein Repaint)
+
+        // Inkrementeller Detektor-State: nur die aktive Kandidaten-Range waechst live.
+        private int _lastDetBar = -1;
+        private bool _candActive;
+        private int _candStart;
+        private decimal _candHi, _candLo, _candWidth;
 
         // Zuletzt berechnete Schwellen (fuer HUD + Freeze-Snapshot).
         private decimal _liveVolThr, _liveDeltaThr, _liveAbsThr;
@@ -432,10 +439,15 @@ namespace OrderflowSignal
         [Range(3, 200)]
         public int DetectorMinBars { get => _detectorMinBars; set { _detectorMinBars = Math.Max(3, value); RecalculateValues(); } }
 
-        [Display(Name = "Breiten-Faktor (x Ø Bar-Range)", GroupName = "Range-Detektor", Order = 103,
-            Description = "Max. Range-Hoehe = Faktor * durchschnittliche Bar-Range. Kleiner = engere Balances.")]
+        [Display(Name = "Breiten-Faktor (x ATR)", GroupName = "Range-Detektor", Order = 103,
+            Description = "Max. Range-Hoehe = Faktor * ATR (stabil, kein Drift). Kleiner = engere Balances.")]
         [Range(0.5, 20.0)]
         public decimal DetectorWidthFactor { get => _detectorWidthFactor; set { _detectorWidthFactor = value; RecalculateValues(); } }
+
+        [Display(Name = "Breiten-ATR Periode", GroupName = "Range-Detektor", Order = 104,
+            Description = "Periode fuer die ATR, die die Range-Breite bestimmt (fix je Range -> kein Repaint).")]
+        [Range(2, 200)]
+        public int DetectorAtrPeriod { get => _detectorAtrPeriod; set { _detectorAtrPeriod = Math.Max(2, value); RecalculateValues(); } }
 
         [Display(Name = "Farbe Break Up", GroupName = "Farben", Order = 79)]
         public Color ColorBreakUp { get => _colorBreakUp; set { _colorBreakUp = value; RedrawChart(); } }
@@ -526,7 +538,7 @@ namespace OrderflowSignal
 
             ComputeLive();
             ComputeBalanceRange();
-            ComputeDetectorRanges();
+            ProcessDetector();
 
             string key = $"{_hudBull}|{_hudBear}|{_hudSignal}|{_hudRev}|{_hudTags}|{_hudWarn}|{_chartLabel}|" +
                          $"{_liveVolThr}|{_liveDeltaThr}|{_liveAbsThr}|{_freezeCalibration}|" +
@@ -575,6 +587,8 @@ namespace OrderflowSignal
             _lastRevBar = -1;
             _rangeValid = false;
             _detRanges.Clear();
+            _lastDetBar = -1;
+            _candActive = false;
             // _frz* NICHT zuruecksetzen -> eingefrorene Kalibrierung ueberlebt Recalc.
             _hudBull = _hudBear = _hudSignal = _hudRev = 0;
             _hudTags = "";
@@ -948,60 +962,83 @@ namespace OrderflowSignal
         // Range-Detektor: segmentiert die letzten N Bars in Konsolidierungs-Boxen.
         // Eine Range "laeuft", solange der Preis in einem Band <= maxWidth bleibt;
         // bricht er aus, wird sie eingefroren und nach Richtung gefaerbt.
-        private void ComputeDetectorRanges()
+        // Inkrementell: jede ABGESCHLOSSENE Range wird EINGEFROREN (kein Repaint).
+        // Nur die aktive Kandidaten-Range waechst live. Break NUR per Close ausserhalb
+        // des Bandes (Wicks brechen die Range nicht). Breite = fixe ATR je Range.
+        private void ProcessDetector()
         {
-            _detRanges.Clear();
             if (!_detectorEnabled)
                 return;
 
-            int last = CurrentBar - 1;
-            int start = Math.Max(0, last - _detectorLookback + 1);
-            if (last - start < _detectorMinBars)
+            int lastClosed = CurrentBar - 2;   // nur abgeschlossene Bars
+            if (_lastDetBar < 0)
+                _lastDetBar = Math.Max(-1, lastClosed - _detectorLookback);
+
+            while (_lastDetBar < lastClosed)
+            {
+                _lastDetBar++;
+                DetectorStep(_lastDetBar);
+            }
+        }
+
+        private void DetectorStep(int bar)
+        {
+            var c = GetCandle(bar);
+            if (c == null)
                 return;
 
-            decimal sumR = 0;
+            if (!_candActive)
+            {
+                StartCandidate(bar, c);
+                return;
+            }
+
+            // Break NUR, wenn der Close das Band verlaesst (Wicks zaehlen nicht).
+            if (c.Close > _candHi || c.Close < _candLo)
+            {
+                int len = bar - _candStart;   // [_candStart .. bar-1]
+                if (len >= _detectorMinBars)
+                {
+                    int dir = c.Close > _candHi ? 1 : -1;
+                    _detRanges.Add(new DetRange { Start = _candStart, End = bar - 1, High = _candHi, Low = _candLo, Dir = dir });
+                }
+                StartCandidate(bar, c);
+                return;
+            }
+
+            // Close im Band -> Band per High/Low erweitern, gedeckelt auf die fixe Breite.
+            decimal nh = Math.Max(_candHi, c.High), nl = Math.Min(_candLo, c.Low);
+            if (_candWidth > 0 && nh - nl <= _candWidth)
+            {
+                _candHi = nh;
+                _candLo = nl;
+            }
+            // sonst: Wick ueber die Breite hinaus, Close aber drin -> Band unveraendert.
+        }
+
+        private void StartCandidate(int bar, IndicatorCandle c)
+        {
+            _candActive = true;
+            _candStart = bar;
+            _candHi = c.High;
+            _candLo = c.Low;
+            _candWidth = WidthAtBar(bar);
+        }
+
+        // Stabile Breite: Ø Bar-Range ueber die letzten AtrPeriod Bars (bis bar) * Faktor.
+        // Wird je Range einmal bei deren Start fixiert -> kein nachtraegliches Driften.
+        private decimal WidthAtBar(int bar)
+        {
+            int p = Math.Max(1, _detectorAtrPeriod);
+            int s = Math.Max(0, bar - p + 1);
+            decimal sum = 0;
             int n = 0;
-            for (int i = start; i <= last; i++)
+            for (int i = s; i <= bar; i++)
             {
                 var ci = GetCandle(i);
-                if (ci != null) { sumR += ci.High - ci.Low; n++; }
+                if (ci != null) { sum += ci.High - ci.Low; n++; }
             }
-            if (n == 0)
-                return;
-            decimal maxWidth = (sumR / n) * _detectorWidthFactor;
-            if (maxWidth <= 0)
-                return;
-
-            int idx = start;
-            while (idx <= last)
-            {
-                var c0 = GetCandle(idx);
-                if (c0 == null) { idx++; continue; }
-
-                decimal hi = c0.High, lo = c0.Low;
-                int j = idx + 1;
-                while (j <= last)
-                {
-                    var cj = GetCandle(j);
-                    if (cj == null) break;
-                    decimal nh = Math.Max(hi, cj.High), nl = Math.Min(lo, cj.Low);
-                    if (nh - nl <= maxWidth) { hi = nh; lo = nl; j++; }
-                    else break;
-                }
-
-                if (j - idx >= _detectorMinBars)
-                {
-                    int dir = 0;
-                    if (j <= last)
-                    {
-                        var cb = GetCandle(j);
-                        if (cb != null) dir = cb.Close > hi ? 1 : cb.Close < lo ? -1 : 0;
-                    }
-                    _detRanges.Add(new DetRange { Start = idx, End = j - 1, High = hi, Low = lo, Dir = dir });
-                    idx = j;
-                }
-                else idx++;
-            }
+            return n > 0 ? (sum / n) * _detectorWidthFactor : 0m;
         }
 
         private static void AddCandleToHistogram(IndicatorCandle candle, Dictionary<decimal, decimal> hist)
@@ -1301,39 +1338,45 @@ namespace OrderflowSignal
 
         private void DrawDetectorRanges(RenderContext context)
         {
-            if (!_detectorEnabled || _detRanges.Count == 0)
+            if (!_detectorEnabled)
                 return;
             if (ChartInfo?.PriceChartContainer is not { } cont)
                 return;
 
             var region = cont.Region;
-            int lastBar = CurrentBar - 1;
+
+            // Eingefrorene Ranges enden an ihrem End (kein Repaint, kein Verlaengern).
             foreach (var r in _detRanges)
+                DrawOneRange(context, cont, region, r.Start, r.End, r.High, r.Low, r.Dir, false);
+
+            // Aktive Kandidaten-Range (grau, laeuft nach rechts), sobald sie lang genug ist.
+            if (_candActive && (CurrentBar - 2) - _candStart + 1 >= _detectorMinBars)
+                DrawOneRange(context, cont, region, _candStart, CurrentBar - 1, _candHi, _candLo, 0, true);
+        }
+
+        private void DrawOneRange(RenderContext context, IChartContainer cont, Rectangle region,
+                                  int startBar, int endBar, decimal high, decimal low, int dir, bool extendRight)
+        {
+            int x1, x2, yH, yL;
+            try
             {
-                // Nur die wirklich aktive Range (laeuft bis zur letzten Bar) nach
-                // rechts verlaengern; abgeschlossene Boxen enden an ihrem End.
-                bool active = r.End >= lastBar;
-                int x1, x2, yH, yL;
-                try
-                {
-                    x1 = cont.GetXByBar(r.Start, false);
-                    x2 = active ? region.Right : cont.GetXByBar(r.End, false);
-                    yH = cont.GetYByPrice(r.High, false);
-                    yL = cont.GetYByPrice(r.Low, false);
-                }
-                catch { continue; }
-
-                if (x2 < region.Left || x1 > region.Right)
-                    continue;
-                x1 = Math.Max(x1, region.Left);
-                x2 = Math.Min(x2, region.Right);
-                if (x2 <= x1)
-                    continue;
-
-                var col = r.Dir > 0 ? _colorBreakUp : r.Dir < 0 ? _colorBreakDn : _colorFlat;
-                int top = Math.Min(yH, yL), h = Math.Abs(yL - yH);
-                context.DrawRectangle(new RenderPen(col, 1), new Rectangle(x1, top, x2 - x1, h));
+                x1 = cont.GetXByBar(startBar, false);
+                x2 = extendRight ? region.Right : cont.GetXByBar(endBar, false);
+                yH = cont.GetYByPrice(high, false);
+                yL = cont.GetYByPrice(low, false);
             }
+            catch { return; }
+
+            if (x2 < region.Left || x1 > region.Right)
+                return;
+            x1 = Math.Max(x1, region.Left);
+            x2 = Math.Min(x2, region.Right);
+            if (x2 <= x1)
+                return;
+
+            var col = dir > 0 ? _colorBreakUp : dir < 0 ? _colorBreakDn : _colorFlat;
+            int top = Math.Min(yH, yL), h = Math.Abs(yL - yH);
+            context.DrawRectangle(new RenderPen(col, 1), new Rectangle(x1, top, x2 - x1, h));
         }
 
         private void DrawMarkers(RenderContext context)
