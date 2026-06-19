@@ -1411,11 +1411,6 @@ namespace OrderflowSignal
             context.DrawLine(edgePen, xStart, yVah, xEnd, yVah);
             context.DrawLine(edgePen, xStart, yVal, xEnd, yVal);
             context.DrawLine(new RenderPen(_colorRangePoc, 1), xStart, yPoc, xEnd, yPoc);
-
-            // Labels rechts an den Linien.
-            context.DrawString($"VAH {_rangeVah:0.##}", _font, _colorRangeEdge, xEnd - 110, yVah - 14);
-            context.DrawString($"VAL {_rangeVal:0.##}", _font, _colorRangeEdge, xEnd - 110, yVal + 2);
-            context.DrawString($"POC {_rangeVpoc:0.##}", _font, _colorRangePoc, xEnd - 110, yPoc - 14);
         }
 
         private void DrawDetectorRanges(RenderContext context)
@@ -1461,9 +1456,9 @@ namespace OrderflowSignal
             int top = Math.Min(yH, yL), h = Math.Abs(yL - yH);
             context.DrawRectangle(new RenderPen(col, 1), new Rectangle(x1, top, x2 - x1, h));
 
-            // vPOC-Linie der Range (Value-Center).
+            // vPOC-Linie der Range (Value-Center), gestrichelt.
             if (poc > 0)
-                context.DrawLine(new RenderPen(_colorRangePoc, 1), x1, yP, x2, yP);
+                context.DrawLine(new RenderPen(_colorRangePoc, 1, System.Drawing.Drawing2D.DashStyle.Dash), x1, yP, x2, yP);
         }
 
         private void DrawMarkers(RenderContext context)
