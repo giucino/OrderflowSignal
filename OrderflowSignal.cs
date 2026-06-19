@@ -127,6 +127,9 @@ namespace OrderflowSignal
         private int _detectorMinBars = 10;       // Mindest-Bars fuer eine Range
         private decimal _detectorWidthFactor = 3.0m; // max. Range-Hoehe = Faktor * ATR
         private int _detectorAtrPeriod = 14;     // Periode der Breiten-ATR (stabil, kein Drift)
+        private bool _detectorVolumeFilter = true;    // Volumen-Akzeptanz: nur echte Auktions-Balances
+        private decimal _detectorPocFactor = 1.5m;    // klarer vPOC: POC-Vol >= Faktor * Ø Level-Vol
+        private decimal _detectorMinVolFactor = 0.7m; // genug Volumen: Range-Ø-Bar-Vol >= Faktor * Umfeld
         private Color _colorBreakUp = Color.FromArgb(200, 60, 190, 90);   // hoch ausgebrochen
         private Color _colorBreakDn = Color.FromArgb(200, 225, 70, 70);   // runter ausgebrochen
         private Color _colorFlat = Color.FromArgb(170, 150, 150, 150);    // noch aktiv/flat
@@ -188,7 +191,7 @@ namespace OrderflowSignal
         private bool _rangeValid;
 
         // Range-Detektor: erkannte Konsolidierungs-Boxen.
-        private struct DetRange { public int Start, End; public decimal High, Low; public int Dir; }
+        private struct DetRange { public int Start, End; public decimal High, Low; public int Dir; public decimal Poc; }
         private readonly List<DetRange> _detRanges = new();   // EINGEFRORENE Ranges (kein Repaint)
 
         // Inkrementeller Detektor-State: nur die aktive Kandidaten-Range waechst live.
@@ -448,6 +451,20 @@ namespace OrderflowSignal
             Description = "Periode fuer die ATR, die die Range-Breite bestimmt (fix je Range -> kein Repaint).")]
         [Range(2, 200)]
         public int DetectorAtrPeriod { get => _detectorAtrPeriod; set { _detectorAtrPeriod = Math.Max(2, value); RecalculateValues(); } }
+
+        [Display(Name = "Volumen-Akzeptanz (Auktions-Balance)", GroupName = "Range-Detektor", Order = 105,
+            Description = "Range nur gueltig, wenn sie genug Volumen UND einen klaren vPOC hat (echte Balance statt nur 'Preis war eng').")]
+        public bool DetectorVolumeFilter { get => _detectorVolumeFilter; set { _detectorVolumeFilter = value; RecalculateValues(); } }
+
+        [Display(Name = "Klarer vPOC Faktor", GroupName = "Range-Detektor", Order = 106,
+            Description = "POC-Level-Volumen muss >= Faktor * Ø Level-Volumen sein (gepeakte Verteilung). Hoeher = strenger.")]
+        [Range(1.0, 10.0)]
+        public decimal DetectorPocFactor { get => _detectorPocFactor; set { _detectorPocFactor = value; RecalculateValues(); } }
+
+        [Display(Name = "Min-Volumen Faktor (vs Umfeld)", GroupName = "Range-Detektor", Order = 107,
+            Description = "Range-Ø-Bar-Volumen muss >= Faktor * Umfeld-Ø-Bar-Volumen sein (kein toter Drift). 0 = aus.")]
+        [Range(0.0, 5.0)]
+        public decimal DetectorMinVolFactor { get => _detectorMinVolFactor; set { _detectorMinVolFactor = value; RecalculateValues(); } }
 
         [Display(Name = "Farbe Break Up", GroupName = "Farben", Order = 79)]
         public Color ColorBreakUp { get => _colorBreakUp; set { _colorBreakUp = value; RedrawChart(); } }
@@ -1013,7 +1030,7 @@ namespace OrderflowSignal
                 if (len >= _detectorMinBars)
                 {
                     int dir = c.Close > _candHi ? 1 : -1;
-                    _detRanges.Add(new DetRange { Start = _candStart, End = bar - 1, High = _candHi, Low = _candLo, Dir = dir });
+                    TryAddRange(_candStart, bar - 1, _candHi, _candLo, dir);
                 }
                 StartCandidate(bar, c);
             }
@@ -1043,6 +1060,67 @@ namespace OrderflowSignal
                 if (ci != null) { sum += ci.High - ci.Low; n++; }
             }
             return n > 0 ? (sum / n) * _detectorWidthFactor : 0m;
+        }
+
+        // Friert eine fertige Range ein — bei aktiver Volumen-Akzeptanz nur, wenn sie
+        // genug Volumen UND einen klaren vPOC hat (echte Auktions-Balance).
+        private void TryAddRange(int start, int end, decimal hi, decimal lo, int dir)
+        {
+            decimal poc = 0m;
+            if (_detectorVolumeFilter && !RangePassesVolume(start, end, out poc))
+                return;
+            _detRanges.Add(new DetRange { Start = start, End = end, High = hi, Low = lo, Dir = dir, Poc = poc });
+        }
+
+        // Auktions-Akzeptanz: klarer vPOC (gepeakte Verteilung) UND genug Volumen
+        // relativ zum Umfeld. poc = Value-Center der Range.
+        private bool RangePassesVolume(int start, int end, out decimal poc)
+        {
+            poc = 0m;
+            var hist = new Dictionary<decimal, decimal>();
+            for (int i = start; i <= end; i++)
+            {
+                var ci = GetCandle(i);
+                if (ci != null) AddCandleToHistogram(ci, hist);
+            }
+            if (hist.Count == 0)
+                return false;
+
+            decimal total = 0m, maxVol = -1m;
+            foreach (var kv in hist)
+            {
+                total += kv.Value;
+                if (kv.Value > maxVol) { maxVol = kv.Value; poc = kv.Key; }
+            }
+
+            // (a) Klarer vPOC: POC-Level deutlich ueber dem Durchschnitt der Level.
+            decimal meanLevel = total / hist.Count;
+            if (!(meanLevel > 0 && maxVol >= _detectorPocFactor * meanLevel))
+                return false;
+
+            // (b) Genug Volumen: Range-Ø-Bar-Vol >= Faktor * Umfeld-Ø-Bar-Vol.
+            if (_detectorMinVolFactor > 0)
+            {
+                int bars = end - start + 1;
+                decimal rangeAvg = bars > 0 ? total / bars : 0m;
+                decimal refAvg = AvgBarVolume(start - 1, _detectorAtrPeriod);
+                if (refAvg > 0 && rangeAvg < _detectorMinVolFactor * refAvg)
+                    return false;
+            }
+            return true;
+        }
+
+        private decimal AvgBarVolume(int refEnd, int period)
+        {
+            int s = Math.Max(0, refEnd - period + 1);
+            decimal sum = 0m;
+            int n = 0;
+            for (int i = s; i <= refEnd; i++)
+            {
+                var ci = GetCandle(i);
+                if (ci != null) { sum += ci.Volume; n++; }
+            }
+            return n > 0 ? sum / n : 0m;
         }
 
         private static void AddCandleToHistogram(IndicatorCandle candle, Dictionary<decimal, decimal> hist)
@@ -1351,23 +1429,24 @@ namespace OrderflowSignal
 
             // Eingefrorene Ranges enden an ihrem End (kein Repaint, kein Verlaengern).
             foreach (var r in _detRanges)
-                DrawOneRange(context, cont, region, r.Start, r.End, r.High, r.Low, r.Dir, false);
+                DrawOneRange(context, cont, region, r.Start, r.End, r.High, r.Low, r.Dir, false, r.Poc);
 
             // Aktive Kandidaten-Range (grau, laeuft nach rechts), sobald sie lang genug ist.
             if (_candActive && (CurrentBar - 2) - _candStart + 1 >= _detectorMinBars)
-                DrawOneRange(context, cont, region, _candStart, CurrentBar - 1, _candHi, _candLo, 0, true);
+                DrawOneRange(context, cont, region, _candStart, CurrentBar - 1, _candHi, _candLo, 0, true, 0m);
         }
 
         private void DrawOneRange(RenderContext context, IChartContainer cont, Rectangle region,
-                                  int startBar, int endBar, decimal high, decimal low, int dir, bool extendRight)
+                                  int startBar, int endBar, decimal high, decimal low, int dir, bool extendRight, decimal poc)
         {
-            int x1, x2, yH, yL;
+            int x1, x2, yH, yL, yP = 0;
             try
             {
                 x1 = cont.GetXByBar(startBar, false);
                 x2 = extendRight ? region.Right : cont.GetXByBar(endBar, false);
                 yH = cont.GetYByPrice(high, false);
                 yL = cont.GetYByPrice(low, false);
+                if (poc > 0) yP = cont.GetYByPrice(poc, false);
             }
             catch { return; }
 
@@ -1381,6 +1460,10 @@ namespace OrderflowSignal
             var col = dir > 0 ? _colorBreakUp : dir < 0 ? _colorBreakDn : _colorFlat;
             int top = Math.Min(yH, yL), h = Math.Abs(yL - yH);
             context.DrawRectangle(new RenderPen(col, 1), new Rectangle(x1, top, x2 - x1, h));
+
+            // vPOC-Linie der Range (Value-Center).
+            if (poc > 0)
+                context.DrawLine(new RenderPen(_colorRangePoc, 1), x1, yP, x2, yP);
         }
 
         private void DrawMarkers(RenderContext context)
