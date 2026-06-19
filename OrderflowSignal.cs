@@ -111,6 +111,11 @@ namespace OrderflowSignal
         // Richtung schliesst (ISA-Prinzip). Default an.
         private bool _revConfirm = true;
 
+        // Phase 2b: Reversal-Rauten NUR an Range-Kanten anzeigen (reiner Display-
+        // Filter, aendert die gespeicherten Signale nicht). Default AUS.
+        private bool _revEdgeOnly = false;
+        private int _revEdgeTolerance = 6;   // Toleranz in Ticks zur Kante (High/Low/vPOC)
+
         // ── BALANCE-RANGE (Phase 2a) ───────────────────────────────────────
         // Value Area (VAH/VAL/vPOC) ueber ein rollendes Fenster -> zeichnet die
         // aktuelle Balance. (Reversal-Gate an den Raendern folgt in Phase 2b.)
@@ -402,6 +407,15 @@ namespace OrderflowSignal
         [Display(Name = "Folgekerzen-Bestätigung (2-Kerzen)", GroupName = "Reversal", Order = 87,
             Description = "Umkehr nur, wenn die naechste Kerze in Umkehr-Richtung schliesst. Hoehere Qualitaet, 1 Bar Verzoegerung.")]
         public bool RevConfirm { get => _revConfirm; set { _revConfirm = value; RecalculateValues(); } }
+
+        [Display(Name = "Nur an Range-Kanten (Phase 2b)", GroupName = "Reversal", Order = 88,
+            Description = "Reiner Display-Filter: zeigt Reversal-Rauten nur, wenn das Extrem nahe einer Range-Kante (High/Low/vPOC) liegt. Default AUS -> aendert nichts.")]
+        public bool RevEdgeOnly { get => _revEdgeOnly; set { _revEdgeOnly = value; RedrawChart(); } }
+
+        [Display(Name = "Kanten-Toleranz (Ticks)", GroupName = "Reversal", Order = 89,
+            Description = "Wie nah das Reversal-Extrem an einer Range-Kante liegen muss (in Ticks).")]
+        [Range(0, 100)]
+        public int RevEdgeTolerance { get => _revEdgeTolerance; set { _revEdgeTolerance = Math.Max(0, value); RedrawChart(); } }
 
         // ── Balance-Range ──────────────────────────────────────────────────
         [Display(Name = "Balance-Range zeichnen", GroupName = "Balance-Range", Order = 90,
@@ -1533,6 +1547,33 @@ namespace OrderflowSignal
                 context.DrawLine(new RenderPen(_colorRangePoc, 1, System.Drawing.Drawing2D.DashStyle.Dash), x1, yP, x2, yP);
         }
 
+        // Phase-2b-Filter: liegt das Reversal-Extrem nahe einer Range-Kante
+        // (High/Low/vPOC einer erkannten Box oder der aktiven Kandidaten-Range)?
+        private bool IsAtRangeEdge(int bar, int dir)
+        {
+            var c = GetCandle(bar);
+            if (c == null)
+                return false;
+
+            decimal tick = InstrumentInfo?.TickSize ?? 0m;
+            decimal tol = tick * _revEdgeTolerance;
+            if (tol <= 0)
+                return true;   // ohne gueltige Tick-Groesse nicht filtern
+
+            decimal extreme = dir > 0 ? c.Low : c.High;
+
+            foreach (var r in _detRanges)
+            {
+                if (Math.Abs(extreme - r.High) <= tol) return true;
+                if (Math.Abs(extreme - r.Low) <= tol) return true;
+                if (r.Poc > 0 && Math.Abs(extreme - r.Poc) <= tol) return true;
+            }
+            if (_candActive && (Math.Abs(extreme - _candHi) <= tol || Math.Abs(extreme - _candLo) <= tol))
+                return true;
+
+            return false;
+        }
+
         private void DrawMarkers(RenderContext context)
         {
             if (ChartInfo?.PriceChartContainer is not { } cont)
@@ -1616,6 +1657,11 @@ namespace OrderflowSignal
                     continue;
 
                 int dir = Math.Sign(v);
+
+                // Phase 2b: nur an Range-Kanten anzeigen (reiner Display-Filter).
+                if (_revEdgeOnly && !IsAtRangeEdge(b, dir))
+                    continue;
+
                 int strength = Math.Abs(v);
                 decimal price = dir > 0 ? c.Low - offset : c.High + offset;
 
@@ -1670,9 +1716,13 @@ namespace OrderflowSignal
 
             if (_reversalEnabled)
             {
-                string rt = _hudRev > 0 ? "LONG" : _hudRev < 0 ? "SHORT" : "—";
-                var rc = _hudRev > 0 ? _colorRevBull : _hudRev < 0 ? _colorRevBear : _colorNeutral;
-                lines.Add(($"REV: {rt} {Math.Abs(_hudRev)}", rc, _font));
+                // Phase-2b-Filter konsistent auch im HUD (Live-Bar).
+                int rev = _hudRev;
+                if (rev != 0 && _revEdgeOnly && !IsAtRangeEdge(CurrentBar - 1, Math.Sign(rev)))
+                    rev = 0;
+                string rt = rev > 0 ? "LONG" : rev < 0 ? "SHORT" : "—";
+                var rc = rev > 0 ? _colorRevBull : rev < 0 ? _colorRevBear : _colorNeutral;
+                lines.Add(($"REV: {rt} {Math.Abs(rev)}", rc, _font));
             }
 
             if (_showCalibration)
