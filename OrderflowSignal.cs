@@ -993,7 +993,20 @@ namespace OrderflowSignal
                 return;
             }
 
-            // Break NUR, wenn der Close das Band verlaesst (Wicks zaehlen nicht).
+            decimal nh = Math.Max(_candHi, c.High), nl = Math.Min(_candLo, c.Low);
+
+            // Passt der Bar (inkl. Docht) noch ins Breitenband? -> Range WAECHST, kein Break.
+            // (Erst dadurch kann sich die Range ueberhaupt auf volle Breite etablieren.)
+            if (_candWidth <= 0 || nh - nl <= _candWidth)
+            {
+                _candHi = nh;
+                _candLo = nl;
+                return;
+            }
+
+            // Bar wuerde das Band sprengen:
+            //   Close AUSSERHALB des Bandes -> echter, Close-bestaetigter Break.
+            //   Close noch drin (nur Docht raus)  -> Range bleibt, Band unveraendert.
             if (c.Close > _candHi || c.Close < _candLo)
             {
                 int len = bar - _candStart;   // [_candStart .. bar-1]
@@ -1003,17 +1016,8 @@ namespace OrderflowSignal
                     _detRanges.Add(new DetRange { Start = _candStart, End = bar - 1, High = _candHi, Low = _candLo, Dir = dir });
                 }
                 StartCandidate(bar, c);
-                return;
             }
-
-            // Close im Band -> Band per High/Low erweitern, gedeckelt auf die fixe Breite.
-            decimal nh = Math.Max(_candHi, c.High), nl = Math.Min(_candLo, c.Low);
-            if (_candWidth > 0 && nh - nl <= _candWidth)
-            {
-                _candHi = nh;
-                _candLo = nl;
-            }
-            // sonst: Wick ueber die Breite hinaus, Close aber drin -> Band unveraendert.
+            // else: Docht ueber die Breite, Close drin -> ignorieren, Range laeuft weiter.
         }
 
         private void StartCandidate(int bar, IndicatorCandle c)
