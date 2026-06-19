@@ -130,6 +130,8 @@ namespace OrderflowSignal
         private bool _detectorVolumeFilter = true;    // Volumen-Akzeptanz: nur echte Auktions-Balances
         private decimal _detectorPocFactor = 1.5m;    // klarer vPOC: POC-Vol >= Faktor * Ø Level-Vol
         private decimal _detectorMinVolFactor = 0.7m; // genug Volumen: Range-Ø-Bar-Vol >= Faktor * Umfeld
+        private bool _detectorMerge = true;           // benachbarte, ueberlappende Balances vereinen
+        private int _detectorMergeGapBars = 20;       // max. Lueckenbars zwischen zwei Ranges fuers Merging
         private Color _colorBreakUp = Color.FromArgb(200, 60, 190, 90);   // hoch ausgebrochen
         private Color _colorBreakDn = Color.FromArgb(200, 225, 70, 70);   // runter ausgebrochen
         private Color _colorFlat = Color.FromArgb(170, 150, 150, 150);    // noch aktiv/flat
@@ -465,6 +467,15 @@ namespace OrderflowSignal
             Description = "Range-Ø-Bar-Volumen muss >= Faktor * Umfeld-Ø-Bar-Volumen sein (kein toter Drift). 0 = aus.")]
         [Range(0.0, 5.0)]
         public decimal DetectorMinVolFactor { get => _detectorMinVolFactor; set { _detectorMinVolFactor = value; RecalculateValues(); } }
+
+        [Display(Name = "Boxen zusammenführen (Merging)", GroupName = "Range-Detektor", Order = 108,
+            Description = "Benachbarte, preislich ueberlappende Balances zu einer Box vereinen (gegen Aufsplittung).")]
+        public bool DetectorMerge { get => _detectorMerge; set { _detectorMerge = value; RecalculateValues(); } }
+
+        [Display(Name = "Merge max. Lücke (Bars)", GroupName = "Range-Detektor", Order = 109,
+            Description = "Hoechstens so viele Bars duerfen zwischen zwei Ranges liegen, damit sie vereint werden.")]
+        [Range(0, 200)]
+        public int DetectorMergeGapBars { get => _detectorMergeGapBars; set { _detectorMergeGapBars = Math.Max(0, value); RecalculateValues(); } }
 
         [Display(Name = "Farbe Break Up", GroupName = "Farben", Order = 79)]
         public Color ColorBreakUp { get => _colorBreakUp; set { _colorBreakUp = value; RedrawChart(); } }
@@ -1067,9 +1078,70 @@ namespace OrderflowSignal
         private void TryAddRange(int start, int end, decimal hi, decimal lo, int dir)
         {
             decimal poc = 0m;
-            if (_detectorVolumeFilter && !RangePassesVolume(start, end, out poc))
-                return;
+            if (_detectorVolumeFilter)
+            {
+                if (!RangePassesVolume(start, end, out poc))
+                    return;
+            }
+            else
+            {
+                poc = PocOf(start, end);
+            }
+
+            // Merging: mit der letzten Range vereinen, wenn nah dran und ueberlappend.
+            if (_detectorMerge && _detRanges.Count > 0)
+            {
+                var last = _detRanges[_detRanges.Count - 1];
+                if (ShouldMerge(last, start, hi, lo))
+                {
+                    decimal mHi = Math.Max(last.High, hi), mLo = Math.Min(last.Low, lo);
+                    _detRanges[_detRanges.Count - 1] = new DetRange
+                    {
+                        Start = last.Start,
+                        End = end,
+                        High = mHi,
+                        Low = mLo,
+                        Dir = dir,
+                        Poc = PocOf(last.Start, end)   // vPOC ueber die ganze vereinte Spanne
+                    };
+                    return;
+                }
+            }
+
             _detRanges.Add(new DetRange { Start = start, End = end, High = hi, Low = lo, Dir = dir, Poc = poc });
+        }
+
+        // Merge-Kriterium: kleine Zeitluecke UND signifikante Preis-Ueberlappung
+        // (>= 50 % der kleineren Box) -> dieselbe Balance.
+        private bool ShouldMerge(DetRange last, int start, decimal hi, decimal lo)
+        {
+            int gap = start - last.End - 1;
+            if (gap > _detectorMergeGapBars)
+                return false;
+
+            decimal ovHi = Math.Min(last.High, hi);
+            decimal ovLo = Math.Max(last.Low, lo);
+            decimal overlap = ovHi - ovLo;
+            if (overlap <= 0)
+                return false;
+
+            decimal minH = Math.Min(last.High - last.Low, hi - lo);
+            return minH > 0 && overlap >= 0.5m * minH;
+        }
+
+        // vPOC (Preislevel mit max. Volumen) ueber [start..end].
+        private decimal PocOf(int start, int end)
+        {
+            var hist = new Dictionary<decimal, decimal>();
+            for (int i = start; i <= end; i++)
+            {
+                var ci = GetCandle(i);
+                if (ci != null) AddCandleToHistogram(ci, hist);
+            }
+            decimal poc = 0m, max = -1m;
+            foreach (var kv in hist)
+                if (kv.Value > max) { max = kv.Value; poc = kv.Key; }
+            return poc;
         }
 
         // Auktions-Akzeptanz: klarer vPOC (gepeakte Verteilung) UND genug Volumen
