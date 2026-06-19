@@ -100,18 +100,30 @@ Raute „pending", bis die Bestätigungskerze schließt.</p>
 <p>
 Der <strong>Range-Detektor</strong> (Default an) sucht <strong>diskrete Konsolidierungen</strong> (Balance nach
 Imbalance) und markiert jede als <strong>Box</strong>, gefärbt nach Ausbruchsrichtung:
-<span class="bull">grün</span> = hoch ausgebrochen, <span class="bear">rot</span> = runter, grau = noch aktiv/flat.
-Eine Range „läuft", solange der Preis ≥ <code>Min-Bars</code> in einem Band ≤ <code>Breiten-Faktor</code> × Ø-Bar-Range
-bleibt; bricht er aus, wird die Box eingefroren und gefärbt. Adaptive Breite → gleich auf ES/NQ/Tick/Renko.
+<span class="bull">grün</span> = hoch ausgebrochen, <span class="bear">rot</span> = runter, grau = aktiv.
 </p>
+<p><strong>Geometrisch gehärtet (kein Repaint):</strong></p>
+<ul>
+  <li><strong>Inkrementell + eingefroren:</strong> abgeschlossene Ranges werden fixiert, nie neu gerechnet → keine sich verschiebende Historie.</li>
+  <li><strong>Break nur per Close</strong> außerhalb des Bandes — Docht-Ausbrüche brechen die Range nicht; Break-Farbe immer Close-bestätigt.</li>
+  <li><strong>Stabile ATR-Breite:</strong> Band = <code>Breiten-Faktor</code> × ATR (<code>Breiten-ATR Periode</code>), je Range bei Start fixiert → kein Drift.</li>
+</ul>
+<p><strong>Auktions-validiert</strong> (<code>Volumen-Akzeptanz</code>, Default an): eine Range ist nur gültig bei
+<strong>klarem vPOC</strong> (POC-Vol ≥ Faktor × Ø Level-Vol) <em>und</em> <strong>genug Volumen</strong> (vs. Umfeld) —
+nicht nur „Preis war eng". Jede Box trägt ihre <strong>vPOC-Linie</strong> (gestrichelt). <strong>Box-Merging</strong>
+(Default an) vereint benachbarte, überlappende Balances zu einer Box.</p>
 <p>
 Die <strong>Balance-Range</strong> (Default <em>aus</em>) zeichnet alternativ eine einzelne rollende <strong>Value Area</strong>
-(VAH/VAL/vPOC) als Band — eine Fair-Value-Referenz, kein diskreter Range-Detektor.
+als Band — reine Fair-Value-Referenz, kein diskreter Detektor.
 </p>
-<div class="note">
-<strong>Phase 2b (offen):</strong> Reversal-Rauten nur noch an den <strong>Rändern</strong> der erkannten Ranges feuern
-lassen → echte Sniper-Entries an den Balance-Kanten.
-</div>
+
+<h2>Phase 2b — Reversals nur an Range-Kanten</h2>
+<p>
+<code>Nur an Range-Kanten</code> (Toggle, <strong>Default AUS</strong>): ein reiner <strong>Display-Filter</strong> — bei „an"
+werden nur Reversal-Rauten gezeigt, deren Extrem innerhalb <code>Kanten-Toleranz</code> (Ticks) an einer
+<strong>Range-Kante</strong> (High / Low / vPOC) liegt = Sniper-Entries an den Balance-Kanten. Ändert die gespeicherten
+Signale <strong>nicht</strong>; aus = bestehendes Verhalten unverändert.
+</p>
 
 <h2>Perzentil-Auto-Kalibrierung</h2>
 <p>
@@ -168,8 +180,8 @@ Der <strong>sich bildende Bar repaintet</strong> bis zum Schluss; Marker auf abg
   <tr><td>Allgemein</td><td>Lookback (N), Signal-Schwelle, Signal-Cooldown, Min-Score für Marker, HUD/Marker/Kalibrierung anzeigen</td></tr>
   <tr><td>Kalibrierung</td><td>Globaler Perzentil, Advanced-Override, Freeze, Perzentil je Bedingung</td></tr>
   <tr><td>Bedingungen</td><td>Delta / Volumen / Absorption / VWAP / Imbalance (Ratio, Mindest-Anzahl) / vPOC / Tape (Min-Kontrakte) — je aktiv + Gewicht</td></tr>
-  <tr><td>Reversal</td><td>aktiv, Lookback, Schwelle, Gewichte (Divergenz / Absorption / vPOC / Exhaustion), Folgekerzen-Bestätigung</td></tr>
-  <tr><td>Range-Detektor</td><td>aktiv, Lookback, Min-Bars pro Range, Breiten-Faktor</td></tr>
+  <tr><td>Reversal</td><td>aktiv, Lookback, Schwelle, Gewichte (Divergenz / Absorption / vPOC / Exhaustion), Folgekerzen-Bestätigung, Nur an Range-Kanten + Kanten-Toleranz</td></tr>
+  <tr><td>Range-Detektor</td><td>aktiv, Lookback, Min-Bars, Breiten-Faktor (×ATR), Breiten-ATR Periode, Volumen-Akzeptanz (+ vPOC-/Min-Volumen-Faktor), Box-Merging (+ max. Lücke)</td></tr>
   <tr><td>Balance-Range</td><td>aktiv (Default aus), Range-Lookback, Value-Area %, Linien verlängern</td></tr>
   <tr><td>Darstellung</td><td>Schriftgröße, Position (oben links/rechts), Abstände, Marker-Abstand (Ticks)</td></tr>
   <tr><td>Farben</td><td>Bull / Bear / Neutral / Hintergrund / Reversal / Range-Band / Ränder / vPOC / Break Up/Down/Flat</td></tr>

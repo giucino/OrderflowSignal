@@ -78,21 +78,34 @@ Eigener Score (0–100 %), feuert ab `Reversal-Schwelle`. Gewichte je Teil-Bedin
 ### Range-Detektor (H-Range-Stil)
 
 Sucht **diskrete Konsolidierungen** (Balance nach Imbalance) und markiert jede als **Box**,
-gefärbt nach **Ausbruchsrichtung**: grün = hoch ausgebrochen, rot = runter, grau = noch
-aktiv/flat. Eine Range „läuft", solange der Preis ≥ `Min-Bars` in einem Band ≤ `Breiten-Faktor`
-× Ø-Bar-Range bleibt; bricht er aus, wird die Box eingefroren und gefärbt. **Adaptive Breite**
-→ funktioniert auf ES/NQ/Tick/Renko gleich. Einstellbar: `Detektor Lookback`, `Min-Bars pro
-Range`, `Breiten-Faktor`. *(Default an.)*
+gefärbt nach **Ausbruchsrichtung**: grün = hoch ausgebrochen, rot = runter, grau = noch aktiv.
+
+**Geometrisch gehärtet (zuverlässig, kein Repaint):**
+- **Inkrementell + eingefroren:** abgeschlossene Ranges werden **fixiert** und nie neu gerechnet
+  → keine sich verschiebende Historie. Nur die aktive Range wächst live.
+- **Break nur per Close:** eine Range bricht erst, wenn eine Bar **außerhalb des Bandes schließt** —
+  Docht-Ausbrüche brechen sie nicht. Break-Farbe ist immer per Close bestätigt.
+- **Stabile ATR-Breite:** Bandhöhe = `Breiten-Faktor` × ATR (`Breiten-ATR Periode`), **je Range bei
+  Start fixiert** → kein driftendes Maß. `Min-Bars pro Range` Bars Mindestdauer.
+
+**Auktions-validiert (echte Balance statt nur „Preis war eng"):**
+- **Volumen-Akzeptanz** (`Volumen-Akzeptanz`, Default an): Range nur gültig bei **klarem vPOC**
+  (POC-Level-Vol ≥ `Klarer-vPOC-Faktor` × Ø Level-Vol = gepeakte Verteilung) **und** **genug Volumen**
+  (Range-Ø-Bar-Vol ≥ `Min-Volumen-Faktor` × Umfeld). Jede Box bekommt ihre **vPOC-Linie** (gestrichelt).
+- **Box-Merging** (`Boxen zusammenführen`, Default an): benachbarte (≤ `Merge max. Lücke`) und
+  preislich überlappende (≥ 50 %) Balances werden zu **einer** Box vereint; vPOC über die ganze Spanne.
 
 ### Balance-Range (Value Area, optionale Referenz)
 
-Zeichnet die aktuelle **Value Area** (VAH/VAL/vPOC) über ein rollendes Fenster als
-schattiertes Band + Ränder + vPOC-Linie — die „Balance", in der der Preis rotiert.
-Einstellbar: `Range Lookback` (Bars fürs Profil), `Value-Area Anteil %` (Standard 70).
-**Default AUS** (reine Fair-Value-Referenz neben dem Range-Detektor).
+Zeichnet alternativ **eine** rollende **Value Area** (VAH/VAL/vPOC) als Band — reine Fair-Value-
+Referenz, kein diskreter Detektor. `Range Lookback`, `Value-Area Anteil %`. **Default AUS**.
 
-> *Phase 2b (offen):* Reversals nur an den **Rändern** der erkannten Ranges feuern lassen
-> → echte Sniper-Entries an den Balance-Kanten.
+### Phase 2b — Reversals nur an Range-Kanten
+
+`Nur an Range-Kanten` (Toggle, **Default AUS**): reiner **Display-Filter** — bei „an" werden nur
+Reversal-Rauten gezeigt, deren Extrem innerhalb `Kanten-Toleranz` (Ticks) an einer **Range-Kante**
+(High / Low / vPOC) liegt = Sniper-Entries an den Balance-Kanten. Ändert die gespeicherten
+Signale **nicht**; aus = bestehendes Verhalten unverändert.
 
 ### Signalqualität
 
@@ -126,8 +139,8 @@ kalibrierte Schwellen wie ein „Result"-Panel) **+ Pfeil-Marker** mit Stärke-Z
 | Allgemein | Lookback, Signal-Schwelle, Signal-Cooldown, Min-Score, HUD/Marker/Kalibrierung an |
 | Kalibrierung | Globaler Perzentil, Advanced-Override, Freeze, Perzentil je Bedingung |
 | Bedingungen | Delta / Volumen / Absorption / VWAP / Imbalance (Ratio, Anzahl) / vPOC / Tape (Min-Kontrakte) — je aktiv + Gewicht |
-| Reversal | aktiv, Lookback, Schwelle, Gewichte (Divergenz / Absorption / vPOC / Exhaustion), **Folgekerzen-Bestätigung** |
-| Range-Detektor | aktiv, Lookback, Min-Bars pro Range, Breiten-Faktor |
+| Reversal | aktiv, Lookback, Schwelle, Gewichte (Divergenz / Absorption / vPOC / Exhaustion), Folgekerzen-Bestätigung, **Nur an Range-Kanten + Kanten-Toleranz** |
+| Range-Detektor | aktiv, Lookback, Min-Bars, Breiten-Faktor (×ATR), Breiten-ATR Periode, Volumen-Akzeptanz (+ vPOC-/Min-Volumen-Faktor), Box-Merging (+ max. Lücke) |
 | Balance-Range | aktiv (Default aus), Range-Lookback, Value-Area %, Linien verlängern |
 | Darstellung | Schriftgröße, Position, Abstände, Marker-Abstand |
 | Farben | Bull / Bear / Neutral / Hintergrund / Reversal / Range-Band / Range-Ränder / vPOC / Break Up/Down/Flat |
