@@ -97,6 +97,20 @@ namespace OrderflowSignal
         private int _tapeWeight = 15;
         private int _tapeMinContracts = 100;
 
+        // ── BIG-TRADE-LEVELS ───────────────────────────────────────────────
+        // Grosse Prints als verteidigte Levels markieren; Alarm beim Re-Test.
+        // Session-abhaengige Mindestgroesse (London niedriger als US).
+        private bool _bigEnabled = true;
+        private int _bigMinLondon = 25;
+        private int _bigMinDefault = 40;       // US / sonstige Zeiten
+        private int _bigLondonStartHour = 9;   // Chart-Zeitzone (wie Sessions sonst)
+        private int _bigLondonEndHour = 15;
+        private int _bigArmTicks = 8;          // so weit muss der Preis weg, bevor Re-Test zaehlt
+        private int _bigHitTolerance = 2;      // Toleranz in Ticks fuer Hit/Dedupe
+        private bool _bigAlertOnHit = true;
+        private Color _colorBigBuy = Color.FromArgb(220, 70, 200, 120);
+        private Color _colorBigSell = Color.FromArgb(220, 230, 100, 100);
+
         // ── REVERSAL-ENGINE ────────────────────────────────────────────────
         // Getrennte Umkehr-Logik (Divergenz, Absorption am Extrem, vPOC-Docht,
         // Exhaustion), nur an lokalen Extrema. Eigener Score + Rauten-Marker.
@@ -197,6 +211,13 @@ namespace OrderflowSignal
         // Tape: pro Bar netto-signiertes Big-Trade-Volumen (Buy +, Sell -).
         // Wird live aus OnCumulativeTrade (Fremd-Thread) befuellt -> Concurrent.
         private readonly ConcurrentDictionary<int, int> _tapeNet = new();
+
+        // Big-Trade-Levels: grosse Prints als verteidigte Levels. Aus OnCumulativeTrade
+        // (Fremd-Thread) befuellt -> per Lock geschuetzt.
+        private sealed class BigLevel { public decimal Price; public int Volume; public int Dir; public int Bar; public bool Armed; public bool Hit; }
+        private readonly object _bigLock = new();
+        private readonly List<BigLevel> _bigLevels = new();
+        private const int BigMaxLevels = 40;
 
         // Reversal: pro Bar signierter Reversal-Score (> 0 Long-Umkehr, < 0 Short).
         private readonly List<int> _revSignals = new();
@@ -466,6 +487,49 @@ namespace OrderflowSignal
             }
         }
 
+        // ── Big-Trade-Levels ───────────────────────────────────────────────
+        [Display(Name = "Big-Trade-Levels aktiv", GroupName = "Big-Trade-Levels", Order = 120,
+            Description = "Grosse Prints als verteidigte Levels markieren + Alarm beim Re-Test. LIVE-ONLY (braucht Tick-Trade-Daten).")]
+        public bool BigEnabled { get => _bigEnabled; set { _bigEnabled = value; RedrawChart(); } }
+
+        [Display(Name = "Min-Kontrakte London", GroupName = "Big-Trade-Levels", Order = 121,
+            Description = "Mindestgroesse eines Big Trades im London-Fenster.")]
+        [Range(1, 100000)]
+        public int BigMinLondon { get => _bigMinLondon; set { _bigMinLondon = Math.Max(1, value); } }
+
+        [Display(Name = "Min-Kontrakte US/Default", GroupName = "Big-Trade-Levels", Order = 122,
+            Description = "Mindestgroesse ausserhalb des London-Fensters (US-Session etc.).")]
+        [Range(1, 100000)]
+        public int BigMinDefault { get => _bigMinDefault; set { _bigMinDefault = Math.Max(1, value); } }
+
+        [Display(Name = "London-Fenster Start (Stunde)", GroupName = "Big-Trade-Levels", Order = 123,
+            Description = "Stunde (Chart-Zeitzone), ab der die London-Schwelle gilt.")]
+        [Range(0, 23)]
+        public int BigLondonStartHour { get => _bigLondonStartHour; set { _bigLondonStartHour = Math.Clamp(value, 0, 23); } }
+
+        [Display(Name = "London-Fenster Ende (Stunde)", GroupName = "Big-Trade-Levels", Order = 124)]
+        [Range(0, 23)]
+        public int BigLondonEndHour { get => _bigLondonEndHour; set { _bigLondonEndHour = Math.Clamp(value, 0, 23); } }
+
+        [Display(Name = "Arm-Distanz (Ticks)", GroupName = "Big-Trade-Levels", Order = 125,
+            Description = "So weit muss der Preis vom Level weg sein, bevor ein erneutes Anlaufen als Re-Test/Hit zaehlt.")]
+        [Range(0, 1000)]
+        public int BigArmTicks { get => _bigArmTicks; set { _bigArmTicks = Math.Max(0, value); } }
+
+        [Display(Name = "Hit-Toleranz (Ticks)", GroupName = "Big-Trade-Levels", Order = 126,
+            Description = "Wie nah der Preis ans Level kommen muss, damit es als getroffen gilt (auch fuers Zusammenfassen am gleichen Preis).")]
+        [Range(0, 100)]
+        public int BigHitTolerance { get => _bigHitTolerance; set { _bigHitTolerance = Math.Max(0, value); } }
+
+        [Display(Name = "Alarm bei Level-Hit (Telegram)", GroupName = "Big-Trade-Levels", Order = 127)]
+        public bool BigAlertOnHit { get => _bigAlertOnHit; set { _bigAlertOnHit = value; } }
+
+        [Display(Name = "Farbe Big-Buy-Level", GroupName = "Farben", Order = 82)]
+        public Color ColorBigBuy { get => _colorBigBuy; set { _colorBigBuy = value; RedrawChart(); } }
+
+        [Display(Name = "Farbe Big-Sell-Level", GroupName = "Farben", Order = 83)]
+        public Color ColorBigSell { get => _colorBigSell; set { _colorBigSell = value; RedrawChart(); } }
+
         // ── Balance-Range ──────────────────────────────────────────────────
         [Display(Name = "Balance-Range zeichnen", GroupName = "Balance-Range", Order = 90,
             Description = "Value Area (VAH/VAL/vPOC) ueber ein rollendes Fenster zeichnen.")]
@@ -651,19 +715,96 @@ namespace OrderflowSignal
         // RedrawChart (OnCalculate liest die Werte beim naechsten Tick).
         protected override void OnCumulativeTrade(CumulativeTrade trade)
         {
-            if (!_tapeEnabled || trade == null || trade.Volume < _tapeMinContracts)
+            if (trade == null)
                 return;
-
             int bar = CurrentBar - 1;
             if (bar < 0)
                 return;
 
-            int signed = trade.Direction == TradeDirection.Buy ? (int)trade.Volume
-                       : trade.Direction == TradeDirection.Sell ? -(int)trade.Volume : 0;
-            if (signed == 0)
+            int dir = trade.Direction == TradeDirection.Buy ? 1
+                    : trade.Direction == TradeDirection.Sell ? -1 : 0;
+            if (dir == 0)
                 return;
 
-            _tapeNet.AddOrUpdate(bar, signed, (_, cur) => cur + signed);
+            // Tape-Bedingung (eigene Schwelle).
+            if (_tapeEnabled && trade.Volume >= _tapeMinContracts)
+            {
+                int signed = dir * (int)trade.Volume;
+                _tapeNet.AddOrUpdate(bar, signed, (_, cur) => cur + signed);
+            }
+
+            // Big-Trade-Levels (session-abhaengige Schwelle, unabhaengig vom Tape).
+            if (_bigEnabled && trade.Volume >= BigThresholdFor(trade.Time))
+                AddBigLevel(trade.Lastprice, (int)trade.Volume, dir, bar);
+        }
+
+        // Session-abhaengige Mindestgroesse fuer ein Big-Trade-Level.
+        private int BigThresholdFor(DateTime t)
+        {
+            int h = t.Hour;
+            bool london = _bigLondonStartHour <= _bigLondonEndHour
+                ? (h >= _bigLondonStartHour && h < _bigLondonEndHour)
+                : (h >= _bigLondonStartHour || h < _bigLondonEndHour);
+            return london ? _bigMinLondon : _bigMinDefault;
+        }
+
+        // Big-Trade als Level speichern (Dedupe am gleichen Preis -> Volumen aufaddieren).
+        private void AddBigLevel(decimal price, int vol, int dir, int bar)
+        {
+            decimal tick = InstrumentInfo?.TickSize ?? 0m;
+            decimal tol = tick * _bigHitTolerance;
+            lock (_bigLock)
+            {
+                foreach (var l in _bigLevels)
+                {
+                    if (!l.Hit && Math.Sign(l.Dir) == Math.Sign(dir) && Math.Abs(l.Price - price) <= tol)
+                    {
+                        l.Volume += vol;
+                        l.Bar = bar;
+                        return;
+                    }
+                }
+                _bigLevels.Add(new BigLevel { Price = price, Volume = vol, Dir = dir, Bar = bar });
+                if (_bigLevels.Count > BigMaxLevels)
+                    _bigLevels.RemoveAt(0);
+            }
+        }
+
+        // Re-Test-Erkennung: ein „scharfgemachtes" Level (Preis war weg) wird wieder
+        // angelaufen -> Hit + Alarm (einmalig). Wird live je Tick aus ComputeLive geprueft.
+        private void CheckBigLevelHits(IndicatorCandle c)
+        {
+            if (!_bigEnabled || c == null)
+                return;
+            decimal tick = InstrumentInfo?.TickSize ?? 0m;
+            decimal armDist = tick * _bigArmTicks;
+            decimal tol = tick * _bigHitTolerance;
+
+            lock (_bigLock)
+            {
+                foreach (var l in _bigLevels)
+                {
+                    if (l.Hit)
+                        continue;
+                    if (!l.Armed)
+                    {
+                        if (Math.Abs(c.Close - l.Price) >= armDist)
+                            l.Armed = true;   // Preis hat das Level verlassen -> scharf
+                        continue;
+                    }
+                    if (c.Low - tol <= l.Price && l.Price <= c.High + tol)
+                    {
+                        l.Hit = true;
+                        if (_histDone && _bigAlertOnHit)
+                        {
+                            AlertsEnabled = true;
+                            string side = l.Dir > 0 ? "Buy" : "Sell";
+                            try { AddAlert(_alertSound, $"Big-Trade-Level {l.Price} ({l.Volume} {side}) angelaufen | {InstrumentInfo?.Instrument} | {c.LastTime:HH:mm}"); }
+                            catch { }
+                        }
+                    }
+                }
+            }
         }
 
         private void ResetState()
@@ -812,6 +953,9 @@ namespace OrderflowSignal
                        $"Im{Arrow(o.DirImb)} vP{Arrow(o.DirVpoc)}" + (_tapeEnabled ? $" Tp{Arrow(o.DirTape)}" : "");
             _hudWarn = BuildWarning();
             _chartLabel = BuildChartLabel();
+
+            // Big-Trade-Levels: Re-Test/Hit gegen den Live-Bar pruefen (Alarm).
+            CheckBigLevelHits(c);
         }
 
         // ─────────────────────────────────────────────────────────────────
@@ -1548,6 +1692,7 @@ namespace OrderflowSignal
 
             DrawBalanceRange(context);
             DrawDetectorRanges(context);
+            DrawBigLevels(context);
 
             if (_showMarkers)
             {
@@ -1557,6 +1702,39 @@ namespace OrderflowSignal
 
             if (_showHud)
                 DrawHud(context);
+        }
+
+        // Big-Trade-Levels als horizontale Linien (gruenlich Buy / roetlich Sell) +
+        // Volumen-Label. Gehittete Levels werden nicht mehr gezeichnet.
+        private void DrawBigLevels(RenderContext context)
+        {
+            if (!_bigEnabled)
+                return;
+            if (ChartInfo?.PriceChartContainer is not { } cont)
+                return;
+
+            var region = cont.Region;
+            lock (_bigLock)
+            {
+                foreach (var l in _bigLevels)
+                {
+                    if (l.Hit)
+                        continue;
+                    int y, x1;
+                    try
+                    {
+                        y = cont.GetYByPrice(l.Price, false);
+                        x1 = Math.Max(region.Left, cont.GetXByBar(l.Bar, false));
+                    }
+                    catch { continue; }
+                    if (x1 > region.Right)
+                        x1 = region.Left;
+
+                    var col = l.Dir > 0 ? _colorBigBuy : _colorBigSell;
+                    context.DrawLine(new RenderPen(col, 2), x1, y, region.Right, y);
+                    context.DrawString(l.Volume.ToString(), _font, col, region.Right - 46, y - 14);
+                }
+            }
         }
 
         private void DrawBalanceRange(RenderContext context)
