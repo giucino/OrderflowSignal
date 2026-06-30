@@ -101,6 +101,7 @@ namespace OrderflowSignal
         // Grosse Prints als verteidigte Levels markieren; Alarm beim Re-Test.
         // Session-abhaengige Mindestgroesse (London niedriger als US).
         private bool _bigEnabled = true;
+        private bool _bigSeparated = true;     // einzelne Prints (OnNewTrade) statt kumulativ
         private int _bigMinLondon = 25;
         private int _bigMinDefault = 40;       // US / sonstige Zeiten
         private int _bigLondonStartHour = 9;   // Chart-Zeitzone (wie Sessions sonst)
@@ -492,6 +493,10 @@ namespace OrderflowSignal
             Description = "Grosse Prints als verteidigte Levels markieren + Alarm beim Re-Test. LIVE-ONLY (braucht Tick-Trade-Daten).")]
         public bool BigEnabled { get => _bigEnabled; set { _bigEnabled = value; RedrawChart(); } }
 
+        [Display(Name = "Einzeltrades (separated)", GroupName = "Big-Trade-Levels", Order = 120,
+            Description = "An = jeder einzelne Print >= Schwelle zaehlt (separated). Aus = kumulativ (aufeinanderfolgende Trades am gleichen Preis zusammengefasst).")]
+        public bool BigSeparated { get => _bigSeparated; set { _bigSeparated = value; } }
+
         [Display(Name = "Min-Kontrakte London", GroupName = "Big-Trade-Levels", Order = 121,
             Description = "Mindestgroesse eines Big Trades im London-Fenster.")]
         [Range(1, 100000)]
@@ -733,9 +738,26 @@ namespace OrderflowSignal
                 _tapeNet.AddOrUpdate(bar, signed, (_, cur) => cur + signed);
             }
 
-            // Big-Trade-Levels (session-abhaengige Schwelle, unabhaengig vom Tape).
-            if (_bigEnabled && trade.Volume >= BigThresholdFor(trade.Time))
+            // Big-Trade-Levels im KUMULATIVEN Modus (separiert laeuft ueber OnNewTrade).
+            if (_bigEnabled && !_bigSeparated && trade.Volume >= BigThresholdFor(trade.Time))
                 AddBigLevel(trade.Lastprice, (int)trade.Volume, dir, bar);
+        }
+
+        // Separierte Big Trades: jeder EINZELNE Print >= Schwelle wird ein Level
+        // (nicht kumulativ aggregiert). Default-Modus.
+        protected override void OnNewTrade(MarketDataArg trade)
+        {
+            if (!_bigEnabled || !_bigSeparated || trade == null)
+                return;
+            int dir = trade.Direction == TradeDirection.Buy ? 1
+                    : trade.Direction == TradeDirection.Sell ? -1 : 0;
+            if (dir == 0)
+                return;
+            int bar = CurrentBar - 1;
+            if (bar < 0)
+                return;
+            if (trade.Volume >= BigThresholdFor(trade.Time))
+                AddBigLevel(trade.Price, (int)trade.Volume, dir, bar);
         }
 
         // Session-abhaengige Mindestgroesse fuer ein Big-Trade-Level.
