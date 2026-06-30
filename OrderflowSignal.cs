@@ -118,6 +118,14 @@ namespace OrderflowSignal
         private bool _revEdgeOnly = false;
         private int _revEdgeTolerance = 6;   // Toleranz in Ticks zur Kante (High/Low/vPOC)
 
+        // ── ALARM (Telegram via ATAS-Alarme) ───────────────────────────────
+        // Latch: erst nach dem Historien-Nachladen alarmieren -> kein Spam alter Umkehren.
+        private bool _histDone;
+        private bool _alertOnReversal = true;
+        private bool _alertLong = true;
+        private bool _alertShort = true;
+        private string _alertSound = "alert1.wav";
+
         // ── BALANCE-RANGE (Phase 2a) ───────────────────────────────────────
         // Value Area (VAH/VAL/vPOC) ueber ein rollendes Fenster -> zeichnet die
         // aktuelle Balance. (Reversal-Gate an den Raendern folgt in Phase 2b.)
@@ -429,6 +437,21 @@ namespace OrderflowSignal
         [Range(0, 100)]
         public int RevEdgeTolerance { get => _revEdgeTolerance; set { _revEdgeTolerance = Math.Max(0, value); RedrawChart(); } }
 
+        // ── Alarm (Telegram) ───────────────────────────────────────────────
+        [Display(Name = "Alarm bei Umkehr (Telegram)", GroupName = "Alarm", Order = 110,
+            Description = "Loest bei bestaetigter Umkehr einen ATAS-Alarm aus (geht ueber die ATAS-Telegram-Anbindung). Nur live, nicht rueckwirkend.")]
+        public bool AlertOnReversal { get => _alertOnReversal; set { _alertOnReversal = value; } }
+
+        [Display(Name = "Alarm bei Long-Umkehr", GroupName = "Alarm", Order = 111)]
+        public bool AlertLong { get => _alertLong; set { _alertLong = value; } }
+
+        [Display(Name = "Alarm bei Short-Umkehr", GroupName = "Alarm", Order = 112)]
+        public bool AlertShort { get => _alertShort; set { _alertShort = value; } }
+
+        [Display(Name = "Alarm-Sound (Datei)", GroupName = "Alarm", Order = 113,
+            Description = "Sound-Datei fuer den ATAS-Alarm (z.B. alert1.wav).")]
+        public string AlertSound { get => _alertSound; set { _alertSound = value; } }
+
         // ── Balance-Range ──────────────────────────────────────────────────
         [Display(Name = "Balance-Range zeichnen", GroupName = "Balance-Range", Order = 90,
             Description = "Value Area (VAH/VAL/vPOC) ueber ein rollendes Fenster zeichnen.")]
@@ -560,6 +583,7 @@ namespace OrderflowSignal
             EnableCustomDrawing = true;
             DrawAbovePrice = true;
             DataSeries[0].IsHidden = true;
+            AlertsEnabled = true;   // ATAS-Alarme aktiv (Telegram laeuft ueber die ATAS-Anbindung)
 
             SubscribeToDrawingEvents(DrawingLayouts.Historical | DrawingLayouts.Final);
             BuildFonts();
@@ -586,6 +610,9 @@ namespace OrderflowSignal
                 _lastProcessedBar++;
                 ProcessClosedBar(_lastProcessedBar);
             }
+            // Ab hier ist die Historie nachgeholt -> ab jetzt duerfen Alarme feuern
+            // (waehrend der obigen Schleife war _histDone == false = stumm).
+            _histDone = true;
 
             if (bar != CurrentBar - 1)
                 return;
@@ -639,6 +666,7 @@ namespace OrderflowSignal
             _revSignals.Clear();
             _lastSignalBar = -1;
             _lastRevBar = -1;
+            _histDone = false;   // erst nach erneutem Historien-Nachladen wieder alarmieren
             _rangeValid = false;
             _detRanges.Clear();
             _lastDetBar = -1;
@@ -696,6 +724,26 @@ namespace OrderflowSignal
             SetRevSignal(bar, rev);
             if (rev != 0)
                 _lastRevBar = bar;
+
+            // Alarm (Telegram via ATAS) — NUR live (nach Historien-Nachladen), nicht rueckwirkend.
+            if (rev != 0 && _histDone && AlertsEnabled && _alertOnReversal)
+                FireReversalAlert(bar, rev, c);
+        }
+
+        // Loest einen ATAS-Alarm aus (geht automatisch durch die konfigurierte
+        // Telegram-Anbindung). rev > 0 = Long-Umkehr, rev < 0 = Short-Umkehr.
+        private void FireReversalAlert(int bar, int rev, IndicatorCandle c)
+        {
+            if (rev > 0 && !_alertLong) return;
+            if (rev < 0 && !_alertShort) return;
+
+            string dir = rev > 0 ? "LONG-Umkehr ▲" : "SHORT-Umkehr ▼";
+            string instr = InstrumentInfo?.Instrument ?? "";
+            string msg = $"Orderflow {instr}: {dir} | Score {Math.Abs(rev)}% | {c?.Close} | {c?.LastTime:HH:mm}";
+
+            // Einfache Overload (ohne Color) -> kein WPF/PresentationCore noetig.
+            // Geht durch die in ATAS konfigurierte Telegram-Anbindung.
+            AddAlert(_alertSound, msg);
         }
 
         private void ComputeLive()
