@@ -452,6 +452,20 @@ namespace OrderflowSignal
             Description = "Sound-Datei fuer den ATAS-Alarm (z.B. alert1.wav).")]
         public string AlertSound { get => _alertSound; set { _alertSound = value; } }
 
+        [Display(Name = "▶ Test-Alarm jetzt senden", GroupName = "Alarm", Order = 114,
+            Description = "Loest sofort einen Test-Alarm aus (zum Pruefen der Telegram-Anbindung, ohne auf eine Umkehr zu warten).")]
+        public bool AlertTest
+        {
+            get => false;   // wie ein Taster: zeigt sich immer als 'aus'
+            set
+            {
+                if (!value) return;
+                AlertsEnabled = true;
+                try { AddAlert(_alertSound, $"Orderflow TEST-Alarm | {InstrumentInfo?.Instrument} | {DateTime.Now:HH:mm:ss}"); }
+                catch { }
+            }
+        }
+
         // ── Balance-Range ──────────────────────────────────────────────────
         [Display(Name = "Balance-Range zeichnen", GroupName = "Balance-Range", Order = 90,
             Description = "Value Area (VAH/VAL/vPOC) ueber ein rollendes Fenster zeichnen.")]
@@ -726,7 +740,7 @@ namespace OrderflowSignal
                 _lastRevBar = bar;
 
             // Alarm (Telegram via ATAS) — NUR live (nach Historien-Nachladen), nicht rueckwirkend.
-            if (rev != 0 && _histDone && AlertsEnabled && _alertOnReversal)
+            if (rev != 0 && _histDone && _alertOnReversal)
                 FireReversalAlert(bar, rev, c);
         }
 
@@ -741,9 +755,11 @@ namespace OrderflowSignal
             string instr = InstrumentInfo?.Instrument ?? "";
             string msg = $"Orderflow {instr}: {dir} | Score {Math.Abs(rev)}% | {c?.Close} | {c?.LastTime:HH:mm}";
 
-            // Einfache Overload (ohne Color) -> kein WPF/PresentationCore noetig.
-            // Geht durch die in ATAS konfigurierte Telegram-Anbindung.
-            AddAlert(_alertSound, msg);
+            // Defensiv: AlertsEnabled direkt vor dem Senden setzen (falls beim Laden
+            // ueberschrieben). Einfache Overload (ohne Color) -> kein WPF noetig.
+            AlertsEnabled = true;
+            try { AddAlert(_alertSound, msg); }
+            catch { /* Alarm darf nie die Berechnung stoppen */ }
         }
 
         private void ComputeLive()
