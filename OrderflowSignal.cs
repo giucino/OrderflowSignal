@@ -109,6 +109,7 @@ namespace OrderflowSignal
         private int _bigArmTicks = 8;          // so weit muss der Preis weg, bevor Re-Test zaehlt
         private int _bigHitTolerance = 2;      // Toleranz in Ticks fuer Hit/Dedupe
         private bool _bigAlertOnHit = true;
+        private bool _bigKeepAfterHit = true;   // gehittete Levels behalten (gedimmt/gestrichelt)
         private Color _colorBigBuy = Color.FromArgb(220, 70, 200, 120);
         private Color _colorBigSell = Color.FromArgb(220, 230, 100, 100);
 
@@ -547,6 +548,10 @@ namespace OrderflowSignal
 
         [Display(Name = "Alarm bei Level-Hit (Telegram)", GroupName = "Big-Trade-Levels", Order = 127)]
         public bool BigAlertOnHit { get => _bigAlertOnHit; set { _bigAlertOnHit = value; } }
+
+        [Display(Name = "Levels nach Hit behalten (gestrichelt)", GroupName = "Big-Trade-Levels", Order = 128,
+            Description = "An = gehittete Levels bleiben als gedimmte, gestrichelte Referenz sichtbar. Aus = werden nach dem Hit entfernt.")]
+        public bool BigKeepAfterHit { get => _bigKeepAfterHit; set { _bigKeepAfterHit = value; RedrawChart(); } }
 
         [Display(Name = "Farbe Big-Buy-Level", GroupName = "Farben", Order = 82)]
         public Color ColorBigBuy { get => _colorBigBuy; set { _colorBigBuy = value; RedrawChart(); } }
@@ -1785,8 +1790,8 @@ namespace OrderflowSignal
             {
                 foreach (var l in _bigLevels)
                 {
-                    if (l.Hit)
-                        continue;
+                    if (l.Hit && !_bigKeepAfterHit)
+                        continue;   // gehittet -> entfernen (falls behalten aus)
                     int y, x1;
                     try
                     {
@@ -1797,9 +1802,19 @@ namespace OrderflowSignal
                     if (x1 > region.Right)
                         x1 = region.Left;
 
-                    var col = l.Dir > 0 ? _colorBigBuy : _colorBigSell;
-                    context.DrawLine(new RenderPen(col, 2), x1, y, region.Right, y);
-                    context.DrawString(l.Volume.ToString(), _font, col, region.Right - 46, y - 14);
+                    var baseCol = l.Dir > 0 ? _colorBigBuy : _colorBigSell;
+                    if (l.Hit)
+                    {
+                        // gehittet: gedimmt + gestrichelt (Reaktion bleibt sichtbar).
+                        var dim = Color.FromArgb(Math.Max(60, baseCol.A / 2), baseCol.R, baseCol.G, baseCol.B);
+                        context.DrawLine(new RenderPen(dim, 1, System.Drawing.Drawing2D.DashStyle.Dash), x1, y, region.Right, y);
+                        context.DrawString(l.Volume.ToString(), _font, dim, region.Right - 46, y - 14);
+                    }
+                    else
+                    {
+                        context.DrawLine(new RenderPen(baseCol, 2), x1, y, region.Right, y);
+                        context.DrawString(l.Volume.ToString(), _font, baseCol, region.Right - 46, y - 14);
+                    }
                 }
             }
         }
