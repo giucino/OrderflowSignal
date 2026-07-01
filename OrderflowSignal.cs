@@ -124,6 +124,10 @@ namespace OrderflowSignal
         private int _revExhWeight = 20;       // Exhaustion (duennes Aggressor-Vol)
         private int _revSpeedWeight = 15;     // Speed of Tape: Klimax-Spike am Extrem
         private decimal _revSpeedFactor = 1.5m; // Spike, wenn Bar-Speed >= Faktor * Ø-Speed
+        // Impuls-Filter: in einem gesunden, gerichteten Impuls braucht ein Gegentrend-
+        // Reversal echte CVD-Divergenz (Absorption allein reicht nicht). Default AUS.
+        private bool _revImpulseFilter = false;
+        private decimal _revImpulseEff = 0.5m;  // ab dieser Effizienz gilt das Bein als Impuls
         // 2-Kerzen-Bestaetigung: Umkehr nur, wenn die Folgekerze in Umkehr-
         // Richtung schliesst (ISA-Prinzip). Default an.
         private bool _revConfirm = true;
@@ -445,6 +449,15 @@ namespace OrderflowSignal
             Description = "Spike, wenn der Bar-Tape-Speed (Ticks/Sekunde) >= Faktor * Durchschnitt im Fenster.")]
         [Range(1.0, 10.0)]
         public decimal RevSpeedFactor { get => _revSpeedFactor; set { _revSpeedFactor = value; RecalculateValues(); } }
+
+        [Display(Name = "Impuls-Filter (kein Gegentrend-Picken)", GroupName = "Reversal", Order = 86,
+            Description = "In einem gesunden, gerichteten Impuls braucht die Umkehr echte CVD-Divergenz (Absorption allein reicht nicht). Filtert Trend-Picks. Default AUS.")]
+        public bool RevImpulseFilter { get => _revImpulseFilter; set { _revImpulseFilter = value; RecalculateValues(); } }
+
+        [Display(Name = "Impuls-Effizienz-Schwelle", GroupName = "Reversal", Order = 86,
+            Description = "Ab dieser Effizienz (|Netto-Weg|/Pfad, 0..1) gilt das Bein als gesunder Impuls. Hoeher = nur sehr gerichtete Impulse gelten.")]
+        [Range(0.1, 1.0)]
+        public decimal RevImpulseEff { get => _revImpulseEff; set { _revImpulseEff = Math.Clamp(value, 0.1m, 1.0m); RecalculateValues(); } }
 
         [Display(Name = "Folgekerzen-Bestätigung (2-Kerzen)", GroupName = "Reversal", Order = 87,
             Description = "Umkehr nur, wenn die naechste Kerze in Umkehr-Richtung schliesst. Hoehere Qualitaet, 1 Bar Verzoegerung.")]
@@ -1531,6 +1544,8 @@ namespace OrderflowSignal
             decimal cdAtLow = 0, cdAtHigh = 0;
             decimal sumSpeed = 0;
             int speedN = 0;
+            decimal firstClose = 0, prevClose = 0, path = 0;
+            bool havePrev = false;
             for (int i = start; i < bar; i++)
             {
                 var ci = GetCandle(i);
@@ -1541,7 +1556,10 @@ namespace OrderflowSignal
                 if (ci.High > maxHigh) { maxHigh = ci.High; cdAtHigh = cd; }
                 sumSpeed += BarSpeed(ci);
                 speedN++;
+                if (!havePrev) { firstClose = ci.Close; prevClose = ci.Close; havePrev = true; }
+                else { path += Math.Abs(ci.Close - prevClose); prevClose = ci.Close; }
             }
+            path += Math.Abs(c.Close - prevClose);   // aktuellen Bar in den Pfad einbeziehen
 
             int totalW = _revDivWeight + _revAbsWeight + _revVpocWeight + _revExhWeight + _revSpeedWeight;
             if (totalW <= 0)
@@ -1550,6 +1568,11 @@ namespace OrderflowSignal
             // Speed-Spike: Tape am Extrem deutlich schneller als der Schnitt = Klimax.
             decimal avgSpeed = speedN > 0 ? sumSpeed / speedN : 0m;
             bool speedSpike = avgSpeed > 0 && BarSpeed(c) >= _revSpeedFactor * avgSpeed;
+
+            // Impuls-Filter: Effizienz des Beins ins Extrem (|Netto-Weg| / Pfadlaenge).
+            // Hoch + gerichtet = gesunder Impuls -> Gegentrend-Reversal nur mit Divergenz.
+            decimal displacement = c.Close - firstClose;
+            decimal eff = path > 0 ? Math.Abs(displacement) / path : 0m;
 
             decimal mid = (c.High + c.Low) / 2m;
 
@@ -1563,7 +1586,11 @@ namespace OrderflowSignal
                 //     (Close in der oberen Bar-Haelfte) -> Aggressor getrappt.
                 bool absr = signedMld < 0 && Math.Abs(signedMld) >= absThr && c.Close >= mid;
 
-                if (divg || absr)
+                // Impuls-Filter: gesunder Abwaerts-Impuls -> Absorption allein reicht
+                // nicht, es braucht echte CVD-Divergenz (Erschoepfung).
+                bool strongDown = _revImpulseFilter && eff >= _revImpulseEff && displacement < 0;
+
+                if (divg || (absr && !strongDown))
                 {
                     int s = 0;
                     if (divg) s += _revDivWeight;
@@ -1583,7 +1610,11 @@ namespace OrderflowSignal
                 bool divg = curCumDelta < cdAtHigh;
                 bool absr = signedMld > 0 && Math.Abs(signedMld) >= absThr && c.Close <= mid;
 
-                if (divg || absr)
+                // Impuls-Filter: gesunder Aufwaerts-Impuls -> Absorption allein reicht
+                // nicht, es braucht echte CVD-Divergenz.
+                bool strongUp = _revImpulseFilter && eff >= _revImpulseEff && displacement > 0;
+
+                if (divg || (absr && !strongUp))
                 {
                     int s = 0;
                     if (divg) s += _revDivWeight;
