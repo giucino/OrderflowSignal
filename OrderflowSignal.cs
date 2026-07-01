@@ -128,6 +128,7 @@ namespace OrderflowSignal
         // Reversal echte CVD-Divergenz (Absorption allein reicht nicht). Default AUS.
         private bool _revImpulseFilter = false;
         private decimal _revImpulseEff = 0.5m;  // ab dieser Effizienz gilt das Bein als Impuls
+        private decimal _revDivMinFactor = 1.5m; // im Impuls: CVD-Divergenz >= Faktor * Ø-Bar-Delta
         // 2-Kerzen-Bestaetigung: Umkehr nur, wenn die Folgekerze in Umkehr-
         // Richtung schliesst (ISA-Prinzip). Default an.
         private bool _revConfirm = true;
@@ -458,6 +459,11 @@ namespace OrderflowSignal
             Description = "Ab dieser Effizienz (|Netto-Weg|/Pfad, 0..1) gilt das Bein als gesunder Impuls. Hoeher = nur sehr gerichtete Impulse gelten.")]
         [Range(0.1, 1.0)]
         public decimal RevImpulseEff { get => _revImpulseEff; set { _revImpulseEff = Math.Clamp(value, 0.1m, 1.0m); RecalculateValues(); } }
+
+        [Display(Name = "Impuls: min. Divergenz (x Ø-Bar-Delta)", GroupName = "Reversal", Order = 86,
+            Description = "Im Impuls muss der CVD-Bruch >= Faktor * Ø-Bar-Delta sein (echte Erschoepfung statt Rauschen). Hoeher = strenger. Nur aktiv mit Impuls-Filter.")]
+        [Range(0.0, 20.0)]
+        public decimal RevDivMinFactor { get => _revDivMinFactor; set { _revDivMinFactor = Math.Max(0m, value); RecalculateValues(); } }
 
         [Display(Name = "Folgekerzen-Bestätigung (2-Kerzen)", GroupName = "Reversal", Order = 87,
             Description = "Umkehr nur, wenn die naechste Kerze in Umkehr-Richtung schliesst. Hoehere Qualitaet, 1 Bar Verzoegerung.")]
@@ -1542,7 +1548,7 @@ namespace OrderflowSignal
             // Referenz-Extrema + CVD am Extrem + Ø Tape-Speed im Fenster.
             decimal minLow = decimal.MaxValue, maxHigh = decimal.MinValue;
             decimal cdAtLow = 0, cdAtHigh = 0;
-            decimal sumSpeed = 0;
+            decimal sumSpeed = 0, sumAbsDelta = 0;
             int speedN = 0;
             decimal firstClose = 0, prevClose = 0, path = 0;
             bool havePrev = false;
@@ -1555,11 +1561,13 @@ namespace OrderflowSignal
                 if (ci.Low < minLow) { minLow = ci.Low; cdAtLow = cd; }
                 if (ci.High > maxHigh) { maxHigh = ci.High; cdAtHigh = cd; }
                 sumSpeed += BarSpeed(ci);
+                sumAbsDelta += Math.Abs(ci.Delta);
                 speedN++;
                 if (!havePrev) { firstClose = ci.Close; prevClose = ci.Close; havePrev = true; }
                 else { path += Math.Abs(ci.Close - prevClose); prevClose = ci.Close; }
             }
             path += Math.Abs(c.Close - prevClose);   // aktuellen Bar in den Pfad einbeziehen
+            decimal avgAbsDelta = speedN > 0 ? sumAbsDelta / speedN : 0m;
 
             int totalW = _revDivWeight + _revAbsWeight + _revVpocWeight + _revExhWeight + _revSpeedWeight;
             if (totalW <= 0)
@@ -1579,16 +1587,19 @@ namespace OrderflowSignal
             // Long-Umkehr: neues Tief, aber Orderflow dreht.
             if (c.Low <= minLow)
             {
-                // Primaere Treiber (mind. einer Pflicht):
-                // (a) Kumulative Delta-Divergenz: tieferes Tief, aber CVD hoeher.
-                bool divg = curCumDelta > cdAtLow;
                 // (b) Echte Absorption: grosses Verkaeufer-Delta UND Tief abgelehnt
                 //     (Close in der oberen Bar-Haelfte) -> Aggressor getrappt.
                 bool absr = signedMld < 0 && Math.Abs(signedMld) >= absThr && c.Close >= mid;
 
                 // Impuls-Filter: gesunder Abwaerts-Impuls -> Absorption allein reicht
-                // nicht, es braucht echte CVD-Divergenz (Erschoepfung).
+                // nicht, UND Divergenz muss SIGNIFIKANT sein (kein Rauschen).
                 bool strongDown = _revImpulseFilter && eff >= _revImpulseEff && displacement < 0;
+
+                // (a) Kumulative Delta-Divergenz: tieferes Tief, aber CVD hoeher.
+                //     Im Impuls: der CVD-Bruch muss >= Faktor * Ø-Bar-Delta sein.
+                decimal divGap = curCumDelta - cdAtLow;
+                decimal need = strongDown ? _revDivMinFactor * avgAbsDelta : 0m;
+                bool divg = divGap > 0 && divGap >= need;
 
                 if (divg || (absr && !strongDown))
                 {
@@ -1607,12 +1618,15 @@ namespace OrderflowSignal
             // Short-Umkehr: neues Hoch, aber Orderflow dreht.
             if (c.High >= maxHigh)
             {
-                bool divg = curCumDelta < cdAtHigh;
                 bool absr = signedMld > 0 && Math.Abs(signedMld) >= absThr && c.Close <= mid;
 
                 // Impuls-Filter: gesunder Aufwaerts-Impuls -> Absorption allein reicht
-                // nicht, es braucht echte CVD-Divergenz.
+                // nicht, UND Divergenz muss SIGNIFIKANT sein.
                 bool strongUp = _revImpulseFilter && eff >= _revImpulseEff && displacement > 0;
+
+                decimal divGap = cdAtHigh - curCumDelta;   // > 0 = bearishe Divergenz
+                decimal need = strongUp ? _revDivMinFactor * avgAbsDelta : 0m;
+                bool divg = divGap > 0 && divGap >= need;
 
                 if (divg || (absr && !strongUp))
                 {
