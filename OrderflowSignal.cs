@@ -225,6 +225,9 @@ namespace OrderflowSignal
         private readonly object _bigLock = new();
         private readonly List<BigLevel> _bigLevels = new();
         private const int BigMaxLevels = 40;
+        private bool _bigReqDone;      // Historien-Anfrage pro Laden nur einmal
+        private bool _bigReplaying;    // waehrend historischem Hit-Nachspielen -> keine Alarme
+        private int _bigReqId;         // Request-ID zum Zuordnen der Antwort
 
         // Reversal: pro Bar signierter Reversal-Score (> 0 Long-Umkehr, < 0 Short).
         private readonly List<int> _revSignals = new();
@@ -724,6 +727,15 @@ namespace OrderflowSignal
             if (bar != CurrentBar - 1)
                 return;
 
+            // Big-Trade-Levels aus der Historie rekonstruieren (einmal pro Laden),
+            // damit sie ein Chart-Reload / Hot-Reload ueberleben (Live-Stream wird
+            // fuer die Historie nicht neu abgespielt).
+            if (_bigEnabled && !_bigReqDone && CurrentBar > 1)
+            {
+                _bigReqDone = true;
+                RequestBigLevelHistory();
+            }
+
             ComputeLive();
             ComputeBalanceRange();
             ProcessDetector();
@@ -818,7 +830,7 @@ namespace OrderflowSignal
 
         // Re-Test-Erkennung: ein „scharfgemachtes" Level (Preis war weg) wird wieder
         // angelaufen -> Hit + Alarm (einmalig). Wird live je Tick aus ComputeLive geprueft.
-        private void CheckBigLevelHits(IndicatorCandle c)
+        private void CheckBigLevelHits(IndicatorCandle c, int bar)
         {
             if (!_bigEnabled || c == null)
                 return;
@@ -832,6 +844,8 @@ namespace OrderflowSignal
                 {
                     if (l.Hit)
                         continue;
+                    if (l.Bar > bar)
+                        continue;         // Level existierte an diesem Bar noch nicht
                     if (!l.Armed)
                     {
                         if (Math.Abs(c.Close - l.Price) >= armDist)
@@ -841,7 +855,7 @@ namespace OrderflowSignal
                     if (c.Low - tol <= l.Price && l.Price <= c.High + tol)
                     {
                         l.Hit = true;
-                        if (_histDone && _bigAlertOnHit)
+                        if (_histDone && !_bigReplaying && _bigAlertOnHit)
                         {
                             AlertsEnabled = true;
                             string side = l.Dir > 0 ? "Buy" : "Sell";
@@ -851,6 +865,95 @@ namespace OrderflowSignal
                     }
                 }
             }
+        }
+
+        // Historien-Anfrage: kumulative Trades ueber den geladenen Zeitraum holen,
+        // um die Big-Trade-Levels nach einem Reload zu rekonstruieren.
+        private void RequestBigLevelHistory()
+        {
+            try
+            {
+                var c0 = GetCandle(0);
+                var cN = GetCandle(CurrentBar - 1);
+                if (c0 == null || cN == null)
+                    return;
+                int minVol = Math.Min(_bigMinLondon, _bigMinDefault);
+                if (minVol < 1) minVol = 1;
+                var req = new CumulativeTradesRequest(c0.Time, cN.LastTime, minVol, int.MaxValue);
+                _bigReqId = req.RequestId;
+                RequestForCumulativeTrades(req);
+            }
+            catch { }
+        }
+
+        protected override void OnCumulativeTradesResponse(CumulativeTradesRequest request, IEnumerable<CumulativeTrade> cumulativeTrades)
+        {
+            if (cumulativeTrades == null)
+                return;
+            if (_bigReqId != 0 && request != null && request.RequestId != _bigReqId)
+                return;   // gehoert zu einer anderen Anfrage
+            RebuildBigLevelsFromHistory(cumulativeTrades);
+        }
+
+        // Levels aus historischen Trades neu aufbauen: separated = jeder EINZELNE Tick
+        // >= Session-Schwelle wird ein Level (identisch zur Live-Logik in OnNewTrade).
+        private void RebuildBigLevelsFromHistory(IEnumerable<CumulativeTrade> trades)
+        {
+            if (!_bigEnabled)
+                return;
+            int lastBar = CurrentBar - 1;
+            if (lastBar < 0)
+                return;
+
+            lock (_bigLock) { _bigLevels.Clear(); }
+
+            int barPtr = 0;
+            int minLevelBar = lastBar;
+            foreach (var ctd in trades.OrderBy(t => t.Time))
+            {
+                if (ctd?.Ticks == null)
+                    continue;
+                foreach (var tk in ctd.Ticks)
+                {
+                    if (tk == null)
+                        continue;
+                    int dir = tk.Direction == TradeDirection.Buy ? 1
+                            : tk.Direction == TradeDirection.Sell ? -1 : 0;
+                    if (dir == 0)
+                        continue;
+                    if (tk.Volume < BigThresholdFor(tk.Time))
+                        continue;
+                    int b = FindBarByTime(tk.Time, ref barPtr, lastBar);
+                    AddBigLevel(tk.Price, (int)tk.Volume, dir, b);
+                    if (b < minLevelBar) minLevelBar = b;
+                }
+            }
+
+            // Hit-Status historisch nachspielen (ohne Alarm) -> gehittete Levels
+            // erscheinen wieder gestrichelt, ungetestete durchgezogen.
+            _bigReplaying = true;
+            for (int b = Math.Max(0, minLevelBar); b <= lastBar; b++)
+            {
+                var cc = GetCandle(b);
+                if (cc != null)
+                    CheckBigLevelHits(cc, b);
+            }
+            _bigReplaying = false;
+
+            RedrawChart();
+        }
+
+        // Bar-Index zu einem Trade-Zeitpunkt (Trades + Bars aufsteigend -> laufender Pointer).
+        private int FindBarByTime(DateTime t, ref int barPtr, int lastBar)
+        {
+            while (barPtr < lastBar)
+            {
+                var next = GetCandle(barPtr + 1);
+                if (next == null || next.Time > t)
+                    break;      // t liegt noch im aktuellen Bar
+                barPtr++;
+            }
+            return barPtr;
         }
 
         private void ResetState()
@@ -868,6 +971,7 @@ namespace OrderflowSignal
             _lastSignalBar = -1;
             _lastRevBar = -1;
             _histDone = false;   // erst nach erneutem Historien-Nachladen wieder alarmieren
+            _bigReqDone = false; // Big-Levels bei Reload aus Historie neu anfragen
             _rangeValid = false;
             _detRanges.Clear();
             _lastDetBar = -1;
@@ -1001,7 +1105,7 @@ namespace OrderflowSignal
             _chartLabel = BuildChartLabel();
 
             // Big-Trade-Levels: Re-Test/Hit gegen den Live-Bar pruefen (Alarm).
-            CheckBigLevelHits(c);
+            CheckBigLevelHits(c, last);
         }
 
         // ─────────────────────────────────────────────────────────────────
