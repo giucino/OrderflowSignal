@@ -261,6 +261,8 @@ namespace OrderflowSignal
         private bool _imbZonesEnabled = false;
         private int _imbZoneMinStack = 3;        // min. konsekutive imbalanced Level
         private int _imbSkipEdgeLevels = 1;      // Docht-Rand ignorieren (Finished-Auction-Tips)
+        private bool _imbIncludeVoids = true;    // Single Prints / Volumen-Voids ueberbruecken den Stack
+        private int _imbVoidThreshold = 0;       // Level gilt als Void, wenn Gesamtvolumen <= Schwelle (0 = nur echte 0/0)
         private decimal _imbZoneRatio = 3.0m;    // Ask >= Ratio*Bid (bzw. umgekehrt); 0-Gegenseite = extrem
         private int _imbZoneMaxZones = 20;
         private int _imbZoneArmTicks = 8;        // Preis muss so weit weg sein, bevor Re-Test zaehlt
@@ -756,6 +758,19 @@ namespace OrderflowSignal
         [Range(0, 10)]
         [NumericEditor(NumericEditorTypes.TrackBar, 0, 10, Step = 1)]
         public int ImbSkipEdgeLevels { get => _imbSkipEdgeLevels; set { _imbSkipEdgeLevels = Math.Clamp(value, 0, 10); RecalculateValues(); } }
+
+        [Tab(TabName = "Imbalance", TabOrder = 6)]
+        [Display(Name = "Single Prints / Volumen-Voids einbeziehen", GroupName = "Erkennung", Order = 605,
+            Description = "An = Level ohne fairen Handel (kein/duennes Volumen) UEBERBRUECKEN den Stack (Ineffizienz), statt ihn zu unterbrechen. Ein Level mit echtem zweiseitigem Handel beendet die Zone. Default an.")]
+        public bool ImbIncludeVoids { get => _imbIncludeVoids; set { _imbIncludeVoids = value; RecalculateValues(); } }
+
+        [Tab(TabName = "Imbalance", TabOrder = 6)]
+        [Display(Name = "Void-Schwelle (Volumen)", GroupName = "Erkennung", Order = 607,
+            Description = "Ein Level gilt als Void, wenn sein Gesamtvolumen (Bid+Ask) <= diesem Wert ist. 0 = nur echte 0/0-Level. Hoeher = auch sehr duenne Level als Void werten. Standard: 0.")]
+        [Range(0, 100)]
+        [NumericEditor(NumericEditorTypes.TrackBar, 0, 100, Step = 1)]
+        [VisibleWhen(nameof(ImbIncludeVoids), true)]
+        public int ImbVoidThreshold { get => _imbVoidThreshold; set { _imbVoidThreshold = Math.Max(0, value); RecalculateValues(); } }
 
         [Tab(TabName = "Imbalance", TabOrder = 6)]
         [Display(Name = "Imbalance-Ratio", GroupName = "Erkennung", Order = 604,
@@ -1350,38 +1365,76 @@ namespace OrderflowSignal
                 }
             }
 
-            // (2) Neue Zonen aus diesem (abgeschlossenen) Bar. Docht-Rand ausschliessen
-            //     (Imbalances direkt am Kerzen-Hoch/-Tief = Finished-Auction-Tips, uninteressant).
+            // (2) Neue Zonen aus diesem (abgeschlossenen) Bar (Grid-basiert, Voids ueberbrueckt).
             if (detectNew)
             {
-                var prices = bid.Keys.ToList();
-                prices.Sort();
-                int skip = _imbSkipEdgeLevels;
-                if (prices.Count > 2 * skip)
-                {
-                    var interior = prices.GetRange(skip, prices.Count - 2 * skip);
-                    FindImbStacks(interior, tick, 1, BuyImb, bar);
-                    FindImbStacks(interior, tick, -1, SellImb, bar);
-                }
+                foreach (var run in DetectImbRuns(c))
+                    AddImbZone(run.Low, run.High, run.Dir, bar, run.Len);
             }
         }
 
-        // Laeufe konsekutiver imbalanced Level finden; ab Min-Stack als Zone speichern.
-        private void FindImbStacks(List<decimal> prices, decimal tick, int dir, Func<decimal, bool> isImb, int bar)
+        // Imbalance-Laeufe einer Kerze ueber das TICK-GRID erkennen.
+        // Level-Klasse: Void (kein/duenner Handel), Buy-Imb, Sell-Imb, Fair (zweiseitig).
+        // Ein Lauf = zusammenhaengende Nicht-Fair-Level gleicher Aggressor-Richtung;
+        // Voids UEBERBRUECKEN (kein fairer Handel = Ineffizienz), Fair BEENDET. Docht-Rand
+        // ausgeschlossen. Nur Laeufe mit >= 1 Aggressor-Level UND Laenge >= Min-Stack.
+        private List<(decimal Low, decimal High, int Dir, int Len)> DetectImbRuns(IndicatorCandle c)
         {
-            int i = 0;
-            while (i < prices.Count)
+            var runs = new List<(decimal, decimal, int, int)>();
+            decimal tick = InstrumentInfo?.TickSize ?? 0m;
+            if (tick <= 0 || c == null)
+                return runs;
+            var bid = new Dictionary<decimal, decimal>();
+            var ask = new Dictionary<decimal, decimal>();
+            decimal lo = decimal.MaxValue, hi = decimal.MinValue;
+            foreach (var pv in c.GetAllPriceLevels())
             {
-                if (!isImb(prices[i])) { i++; continue; }
-                int j = i;
-                while (j + 1 < prices.Count
-                       && Math.Abs(prices[j + 1] - (prices[j] + tick)) < tick * 0.5m
-                       && isImb(prices[j + 1]))
-                    j++;
-                if (j - i + 1 >= _imbZoneMinStack)
-                    AddImbZone(prices[i], prices[j], dir, bar, j - i + 1);
-                i = j + 1;
+                bid[pv.Price] = pv.Bid; ask[pv.Price] = pv.Ask;
+                if (pv.Price < lo) lo = pv.Price;
+                if (pv.Price > hi) hi = pv.Price;
             }
+            if (bid.Count == 0)
+                return runs;
+
+            decimal effLo = lo + _imbSkipEdgeLevels * tick;   // Docht-Rand weg
+            decimal effHi = hi - _imbSkipEdgeLevels * tick;
+            if (effHi < effLo)
+                return runs;
+
+            // 1 = Buy, -1 = Sell, 0 = Fair, 2 = Void
+            int Classify(decimal p)
+            {
+                decimal b = bid.TryGetValue(p, out var bv) ? bv : 0m;
+                decimal a = ask.TryGetValue(p, out var av) ? av : 0m;
+                if (a + b <= _imbVoidThreshold)
+                    return _imbIncludeVoids ? 2 : 0;   // Void ueberbrueckt nur, wenn aktiviert
+                decimal bBelow = bid.TryGetValue(p - tick, out var bb) ? bb : 0m;
+                bool buy = a > 0 && (bBelow <= 0 ? true : a >= _imbZoneRatio * bBelow);
+                decimal aAbove = ask.TryGetValue(p + tick, out var aa) ? aa : 0m;
+                bool sell = b > 0 && (aAbove <= 0 ? true : b >= _imbZoneRatio * aAbove);
+                if (buy && !sell) return 1;
+                if (sell && !buy) return -1;
+                return 0;   // Fair oder ambivalent
+            }
+
+            bool inRun = false; int runDir = 0, len = 0, aggr = 0; decimal runLo = 0, runHi = 0;
+            void Flush()
+            {
+                if (inRun && aggr > 0 && len >= _imbZoneMinStack)
+                    runs.Add((runLo, runHi, runDir, len));
+                inRun = false; runDir = 0; len = 0; aggr = 0;
+            }
+            for (decimal p = effLo; p <= effHi + tick * 0.5m; p += tick)
+            {
+                int cls = Classify(p);
+                if (cls == 0) { Flush(); continue; }        // Fair beendet
+                if (cls == 2) { if (inRun) { len++; runHi = p; } continue; }  // Void ueberbrueckt (startet nicht)
+                if (inRun && cls != runDir) Flush();        // Gegenrichtung beendet
+                if (!inRun) { inRun = true; runLo = p; }
+                runDir = cls; aggr++; len++; runHi = p;
+            }
+            Flush();
+            return runs;
         }
 
         // Zone speichern; ueberlappende offene Zonen gleicher Richtung verschmelzen.
@@ -1407,47 +1460,8 @@ namespace OrderflowSignal
         // Docht-Rand ausgeschlossen (kein Finished-Auction-Tip).
         private bool HasImbStack(IndicatorCandle c, int dir)
         {
-            decimal tick = InstrumentInfo?.TickSize ?? 0m;
-            if (tick <= 0 || c == null)
-                return false;
-            var bid = new Dictionary<decimal, decimal>();
-            var ask = new Dictionary<decimal, decimal>();
-            foreach (var pv in c.GetAllPriceLevels()) { bid[pv.Price] = pv.Bid; ask[pv.Price] = pv.Ask; }
-            if (bid.Count == 0)
-                return false;
-            var prices = bid.Keys.ToList();
-            prices.Sort();
-            int skip = _imbSkipEdgeLevels;
-            if (prices.Count <= 2 * skip)
-                return false;
-            var interior = prices.GetRange(skip, prices.Count - 2 * skip);
-
-            bool IsImb(decimal p)
-            {
-                if (dir > 0)
-                {
-                    if (!ask.TryGetValue(p, out var a) || a <= 0) return false;
-                    decimal b = bid.TryGetValue(p - tick, out var bv) ? bv : 0m;
-                    return b <= 0 ? true : a >= _imbZoneRatio * b;
-                }
-                if (!bid.TryGetValue(p, out var bd) || bd <= 0) return false;
-                decimal av = ask.TryGetValue(p + tick, out var a2) ? a2 : 0m;
-                return av <= 0 ? true : bd >= _imbZoneRatio * av;
-            }
-
-            int i = 0;
-            while (i < interior.Count)
-            {
-                if (!IsImb(interior[i])) { i++; continue; }
-                int j = i;
-                while (j + 1 < interior.Count
-                       && Math.Abs(interior[j + 1] - (interior[j] + tick)) < tick * 0.5m
-                       && IsImb(interior[j + 1]))
-                    j++;
-                if (j - i + 1 >= _imbZoneMinStack)
-                    return true;
-                i = j + 1;
-            }
+            foreach (var r in DetectImbRuns(c))
+                if (r.Dir == dir) return true;
             return false;
         }
 
