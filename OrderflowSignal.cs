@@ -7,6 +7,7 @@ using System.Drawing;
 using ATAS.Indicators;
 using OFT.Attributes;
 using OFT.Rendering.Context;
+using OFT.Rendering.Control;
 using OFT.Rendering.Tools;
 
 namespace OrderflowSignal
@@ -224,7 +225,7 @@ namespace OrderflowSignal
         private sealed class BigLevel { public decimal Price; public int Volume; public int Dir; public int Bar; public bool Armed; public bool Hit; }
         private readonly object _bigLock = new();
         private readonly List<BigLevel> _bigLevels = new();
-        private const int BigMaxLevels = 40;
+        private int _bigMaxLevels = 20;   // Obergrenze sichtbarer Levels (gegen Zumuellen)
         private bool _bigReqDone;      // Historien-Anfrage pro Laden nur einmal
         private bool _bigReplaying;    // waehrend historischem Hit-Nachspielen -> keine Alarme
         private int _bigReqId;         // Request-ID zum Zuordnen der Antwort
@@ -556,6 +557,37 @@ namespace OrderflowSignal
             Description = "An = gehittete Levels bleiben als gedimmte, gestrichelte Referenz sichtbar. Aus = werden nach dem Hit entfernt.")]
         public bool BigKeepAfterHit { get => _bigKeepAfterHit; set { _bigKeepAfterHit = value; RedrawChart(); } }
 
+        [Display(Name = "Max. sichtbare Levels", GroupName = "Big-Trade-Levels", Order = 129,
+            Description = "Obergrenze gleichzeitig gezeichneter Big-Trade-Levels. Aeltere fallen raus, wenn ueberschritten. Niedriger = weniger Zumuellung.")]
+        [Range(1, 200)]
+        public int BigMaxLevels
+        {
+            get => _bigMaxLevels;
+            set
+            {
+                _bigMaxLevels = Math.Clamp(value, 1, 200);
+                lock (_bigLock)
+                {
+                    while (_bigLevels.Count > _bigMaxLevels && _bigLevels.Count > 0)
+                        _bigLevels.RemoveAt(0);
+                }
+                RedrawChart();
+            }
+        }
+
+        [Display(Name = "Alle Big-Levels loeschen", GroupName = "Big-Trade-Levels", Order = 130,
+            Description = "Button: entfernt alle aktuell gezeichneten Big-Trade-Levels. (Bei Chart-Reload werden sie aus der Historie neu aufgebaut.)")]
+        public bool BigClearAll
+        {
+            get => false;
+            set
+            {
+                if (!value) return;
+                lock (_bigLock) { _bigLevels.Clear(); }
+                RedrawChart();
+            }
+        }
+
         [Display(Name = "Farbe Big-Buy-Level", GroupName = "Farben", Order = 82)]
         public Color ColorBigBuy { get => _colorBigBuy; set { _colorBigBuy = value; RedrawChart(); } }
 
@@ -823,7 +855,7 @@ namespace OrderflowSignal
                     }
                 }
                 _bigLevels.Add(new BigLevel { Price = price, Volume = vol, Dir = dir, Bar = bar });
-                if (_bigLevels.Count > BigMaxLevels)
+                while (_bigLevels.Count > _bigMaxLevels && _bigLevels.Count > 0)
                     _bigLevels.RemoveAt(0);
             }
         }
@@ -941,6 +973,44 @@ namespace OrderflowSignal
             _bigReplaying = false;
 
             RedrawChart();
+        }
+
+        // Ctrl + Links-Klick auf eine Big-Trade-Linie -> dieses Level einzeln loeschen.
+        public override bool ProcessMouseClick(RenderControlMouseEventArgs e)
+        {
+            if (e == null || !_bigEnabled || !e.Control || e.Button != RenderControlMouseButtons.Left)
+                return base.ProcessMouseClick(e);
+
+            var cont = ChartInfo?.PriceChartContainer;
+            if (cont == null)
+                return false;
+            var region = cont.Region;
+            if (e.X < region.Left || e.X > region.Right)
+                return false;   // nur im Kurschart-Bereich
+
+            const int tolPx = 6;
+            BigLevel target = null;
+            int best = int.MaxValue;
+            lock (_bigLock)
+            {
+                foreach (var l in _bigLevels)
+                {
+                    int y;
+                    try { y = cont.GetYByPrice(l.Price, false); }
+                    catch { continue; }
+                    int d = Math.Abs(e.Y - y);
+                    if (d <= tolPx && d < best) { best = d; target = l; }
+                }
+                if (target != null)
+                    _bigLevels.Remove(target);
+            }
+
+            if (target != null)
+            {
+                RedrawChart();
+                return true;   // Klick verbraucht
+            }
+            return false;
         }
 
         // Bar-Index zu einem Trade-Zeitpunkt (Trades + Bars aufsteigend -> laufender Pointer).
