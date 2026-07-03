@@ -226,7 +226,8 @@ namespace OrderflowSignal
         private readonly object _bigLock = new();
         private readonly List<BigLevel> _bigLevels = new();
         private int _bigMaxLevels = 20;   // Obergrenze sichtbarer Levels (gegen Zumuellen)
-        private bool _bigReqDone;      // Historien-Anfrage pro Laden nur einmal
+        private bool _bigReqDone;      // Historien-Anfrage pro Instanz nur einmal (erstes Laden)
+        private bool _bigDirty;        // Big-Trade-Setting geaendert -> Levels neu aus Historie holen
         private bool _bigReplaying;    // waehrend historischem Hit-Nachspielen -> keine Alarme
         private int _bigReqId;         // Request-ID zum Zuordnen der Antwort
 
@@ -515,7 +516,7 @@ namespace OrderflowSignal
         // ── Big-Trade-Levels ───────────────────────────────────────────────
         [Display(Name = "Big-Trade-Levels aktiv", GroupName = "Big-Trade-Levels", Order = 120,
             Description = "Grosse Prints als verteidigte Levels markieren + Alarm beim Re-Test. LIVE-ONLY (braucht Tick-Trade-Daten).")]
-        public bool BigEnabled { get => _bigEnabled; set { _bigEnabled = value; RedrawChart(); } }
+        public bool BigEnabled { get => _bigEnabled; set { if (value != _bigEnabled) { _bigEnabled = value; _bigDirty = true; RedrawChart(); } } }
 
         [Display(Name = "Einzeltrades (separated)", GroupName = "Big-Trade-Levels", Order = 120,
             Description = "An = jeder einzelne Print >= Schwelle zaehlt (separated). Aus = kumulativ (aufeinanderfolgende Trades am gleichen Preis zusammengefasst).")]
@@ -524,31 +525,31 @@ namespace OrderflowSignal
         [Display(Name = "Min-Kontrakte London", GroupName = "Big-Trade-Levels", Order = 121,
             Description = "Mindestgroesse eines Big Trades im London-Fenster.")]
         [Range(1, 100000)]
-        public int BigMinLondon { get => _bigMinLondon; set { _bigMinLondon = Math.Max(1, value); } }
+        public int BigMinLondon { get => _bigMinLondon; set { int v = Math.Max(1, value); if (v != _bigMinLondon) { _bigMinLondon = v; _bigDirty = true; } } }
 
         [Display(Name = "Min-Kontrakte US/Default", GroupName = "Big-Trade-Levels", Order = 122,
             Description = "Mindestgroesse ausserhalb des London-Fensters (US-Session etc.).")]
         [Range(1, 100000)]
-        public int BigMinDefault { get => _bigMinDefault; set { _bigMinDefault = Math.Max(1, value); } }
+        public int BigMinDefault { get => _bigMinDefault; set { int v = Math.Max(1, value); if (v != _bigMinDefault) { _bigMinDefault = v; _bigDirty = true; } } }
 
         [Display(Name = "London-Fenster Start (Stunde)", GroupName = "Big-Trade-Levels", Order = 123,
             Description = "Stunde (Chart-Zeitzone), ab der die London-Schwelle gilt.")]
         [Range(0, 23)]
-        public int BigLondonStartHour { get => _bigLondonStartHour; set { _bigLondonStartHour = Math.Clamp(value, 0, 23); } }
+        public int BigLondonStartHour { get => _bigLondonStartHour; set { int v = Math.Clamp(value, 0, 23); if (v != _bigLondonStartHour) { _bigLondonStartHour = v; _bigDirty = true; } } }
 
         [Display(Name = "London-Fenster Ende (Stunde)", GroupName = "Big-Trade-Levels", Order = 124)]
         [Range(0, 23)]
-        public int BigLondonEndHour { get => _bigLondonEndHour; set { _bigLondonEndHour = Math.Clamp(value, 0, 23); } }
+        public int BigLondonEndHour { get => _bigLondonEndHour; set { int v = Math.Clamp(value, 0, 23); if (v != _bigLondonEndHour) { _bigLondonEndHour = v; _bigDirty = true; } } }
 
         [Display(Name = "Arm-Distanz (Ticks)", GroupName = "Big-Trade-Levels", Order = 125,
             Description = "So weit muss der Preis vom Level weg sein, bevor ein erneutes Anlaufen als Re-Test/Hit zaehlt.")]
         [Range(0, 1000)]
-        public int BigArmTicks { get => _bigArmTicks; set { _bigArmTicks = Math.Max(0, value); } }
+        public int BigArmTicks { get => _bigArmTicks; set { int v = Math.Max(0, value); if (v != _bigArmTicks) { _bigArmTicks = v; _bigDirty = true; } } }
 
         [Display(Name = "Hit-Toleranz (Ticks)", GroupName = "Big-Trade-Levels", Order = 126,
             Description = "Wie nah der Preis ans Level kommen muss, damit es als getroffen gilt (auch fuers Zusammenfassen am gleichen Preis).")]
         [Range(0, 100)]
-        public int BigHitTolerance { get => _bigHitTolerance; set { _bigHitTolerance = Math.Max(0, value); } }
+        public int BigHitTolerance { get => _bigHitTolerance; set { int v = Math.Max(0, value); if (v != _bigHitTolerance) { _bigHitTolerance = v; _bigDirty = true; } } }
 
         [Display(Name = "Alarm bei Level-Hit (Telegram)", GroupName = "Big-Trade-Levels", Order = 127)]
         public bool BigAlertOnHit { get => _bigAlertOnHit; set { _bigAlertOnHit = value; } }
@@ -762,9 +763,10 @@ namespace OrderflowSignal
             // Big-Trade-Levels aus der Historie rekonstruieren (einmal pro Laden),
             // damit sie ein Chart-Reload / Hot-Reload ueberleben (Live-Stream wird
             // fuer die Historie nicht neu abgespielt).
-            if (_bigEnabled && !_bigReqDone && CurrentBar > 1)
+            if (_bigEnabled && CurrentBar > 1 && (!_bigReqDone || _bigDirty))
             {
                 _bigReqDone = true;
+                _bigDirty = false;
                 RequestBigLevelHistory();
             }
 
@@ -1049,7 +1051,8 @@ namespace OrderflowSignal
             _lastSignalBar = -1;
             _lastRevBar = -1;
             _histDone = false;   // erst nach erneutem Historien-Nachladen wieder alarmieren
-            _bigReqDone = false; // Big-Levels bei Reload aus Historie neu anfragen
+            // _bigReqDone NICHT zuruecksetzen: Levels ueberleben einen reinen Recalc.
+            // Neu-Anfrage nur bei frischer Instanz (_bigReqDone==false) oder _bigDirty.
             _rangeValid = false;
             _detRanges.Clear();
             _lastDetBar = -1;
