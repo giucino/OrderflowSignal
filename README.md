@@ -68,6 +68,18 @@ vorliegt (die zwei Reversal-Archetypen: graduelle Erschöpfung vs. Klimax/Absorp
 vPOC und Exhaustion sind nur *Bestätigung*. So fallen Trend-„Treppen" weg, die weder
 Divergenz noch echte Absorption haben.
 
+**Impuls-Filter gegen Gegentrend-Picken** (`Impuls-Filter`, Toggle, **Default AUS**):
+Misst die **Effizienz** des Beins ins Extrem (|Netto-Weg| / Pfadlänge). Ist das ein
+gesunder, gerichteter Impuls (Effizienz ≥ `Impuls-Effizienz-Schwelle`), reicht Absorption
+allein nicht — es braucht dann echte **CVD-Divergenz**, und die muss **signifikant** sein
+(CVD-Bruch ≥ `min. Divergenz` × Ø-Bar-Delta, kein Rauschen). Filtert Konter-Trend-Picks in
+laufenden Trends heraus, ohne echte Erschöpfungs-Umkehren zu verlieren. Wirkt rückwirkend
+(Historie wird neu berechnet).
+
+**Telegram-Alarm bei Umkehr** (`Alarm bei Umkehr`, Default aus): löst bei **bestätigter**
+Umkehr einen ATAS-Alarm aus (läuft über die native ATAS-Telegram-Anbindung), optional nur
+Long- oder nur Short-Umkehren. Nur live ab dem Laden, nicht rückwirkend (Anti-Spam-Latch).
+
 **2-Kerzen-Bestätigung** (`Folgekerzen-Bestätigung`, Default an): Eine Umkehr wird erst
 gültig, wenn die **Folgekerze in Umkehr-Richtung schließt** (Long-Raute: nächste Kerze
 höher; Short: tiefer). Kandidaten, die sofort weiterliefen, fallen raus — 1 Bar Verzögerung
@@ -107,6 +119,25 @@ Reversal-Rauten gezeigt, deren Extrem innerhalb `Kanten-Toleranz` (Ticks) an ein
 (High / Low / vPOC) liegt = Sniper-Entries an den Balance-Kanten. Ändert die gespeicherten
 Signale **nicht**; aus = bestehendes Verhalten unverändert.
 
+### Big-Trade-Levels (verteidigte Preise + Re-Test-Alarm)
+
+Markiert **große Einzeltrades** (separated Prints, nicht kumulativ) als horizontale **Levels** —
+der Preis, an dem ein großer Player Position aufgebaut/verteidigt hat. Grün = Big-Buy, rot =
+Big-Sell; die **Kontraktzahl** steht am Level.
+
+- **Session-abhängige Schwelle:** `Min-Kontrakte London` (z.B. 20–30) im London-Fenster
+  (`London-Fenster Start/Ende`), sonst `Min-Kontrakte US/Default` (z.B. 40). Der Indikator wählt
+  automatisch nach Uhrzeit.
+- **Re-Test-Alarm:** Verlässt der Preis das Level um `Arm-Distanz` (Ticks) und **läuft es später
+  wieder an** (`Hit-Toleranz`), feuert ein einmaliger **Telegram-Alarm** (`Alarm bei Level-Hit`).
+- **Nach Hit behalten** (`Levels nach Hit behalten`, Default an): getroffene Levels bleiben als
+  **gedimmte, gestrichelte** Referenz sichtbar — man sieht, ob der Preis dort hält oder bricht.
+- **Historien-Rekonstruktion:** Die Levels werden beim Laden aus historischen Trades neu aufgebaut
+  (`RequestForCumulativeTrades`) → sie **überleben Chart-Reload / Hot-Reload** (nicht nur live).
+- **Aufräumen:** `Max. sichtbare Levels` begrenzt die Anzahl; **Ctrl + Links-Klick** auf eine Linie
+  löscht sie einzeln; Button `Alle Big-Levels löschen` räumt alle weg. Big-Buy und Big-Sell am
+  **selben Preis** werden zu **einer** Linie zusammengefasst (Label zeigt Buy/Sell-Split).
+
 ### Signalqualität
 
 - **Min-Score-Filter** (Default 60 %): blendet schwache Signale (z.B. nur VWAP + eine
@@ -134,19 +165,22 @@ kalibrierte Schwellen wie ein „Result"-Panel) **+ Pfeil-Marker** mit Stärke-Z
 
 ## Einstellungen (Kurzüberblick)
 
-| Gruppe | Einstellung |
+Die Settings sind in **Reiter** organisiert (wie ATAS-Standardindikatoren, „Daten"/„Visualization"),
+je Reiter aufklappbare **Untergruppen**. Jede Option hat einen **Tooltip**; ausgewählte Tuning-Werte
+sind **Schieberegler** (Standardwert im Tooltip vermerkt); abhängige Optionen erscheinen nur, wenn ihr
+Schalter aktiv ist.
+
+| Reiter | Untergruppen / Inhalt |
 |---|---|
-| Allgemein | Lookback, Signal-Schwelle, Signal-Cooldown, Min-Score, HUD/Marker/Kalibrierung an |
-| Kalibrierung | Globaler Perzentil, Advanced-Override, Freeze, Perzentil je Bedingung |
-| Bedingungen | Delta / Volumen / Absorption / VWAP / Imbalance (Ratio, Anzahl) / vPOC / Tape (Min-Kontrakte) — je aktiv + Gewicht |
-| Reversal | aktiv, Lookback, Schwelle, Gewichte (Divergenz / Absorption / vPOC / Exhaustion), Folgekerzen-Bestätigung, **Nur an Range-Kanten + Kanten-Toleranz** |
-| Range-Detektor | aktiv, Lookback, Min-Bars, Breiten-Faktor (×ATR), Breiten-ATR Periode, Volumen-Akzeptanz (+ vPOC-/Min-Volumen-Faktor), Box-Merging (+ max. Lücke) |
-| Balance-Range | aktiv (Default aus), Range-Lookback, Value-Area %, Linien verlängern |
-| Darstellung | Schriftgröße, Position, Abstände, Marker-Abstand |
-| Farben | Bull / Bear / Neutral / Hintergrund / Reversal / Range-Band / Range-Ränder / vPOC / Break Up/Down/Flat |
+| **Allgemein** | Allgemein (Lookback) · HUD & Panel (HUD an, Kalibrierung, Schrift, Position, Hintergrund) · Alarm (Sound, Test) |
+| **Signal** | Signal (Schwelle, Cooldown) · Marker (Signal-Marker an, Min-Score, Abstand, Farben) · Kalibrierung (Perzentil global/Advanced/Freeze) · Bedingung: Delta / Volumen / Absorption / VWAP / Imbalance / vPOC / Tape (je aktiv + Gewicht) |
+| **Reversal** | Reversal (aktiv, Reversal-Marker an, Lookback, Schwelle) · Treiber-Gewichte (Divergenz/Absorption/vPOC/Exhaustion/Speed) · Impuls-Filter (Effizienz, min. Divergenz) · Bestätigung & Kanten · Alarm · Farben |
+| **Range** | Detektor (aktiv, Lookback, Min-Bars, Breiten-Faktor ×ATR, ATR-Periode, Volumen-Akzeptanz + vPOC-/Min-Vol-Faktor, Merging + Lücke) · Referenzband (Balance-Range, Value-Area %) · Farben |
+| **Big Trades** | Erkennung (aktiv, separated, Min-Kontrakte London/US, London-Fenster) · Re-Test & Hit (Arm-Distanz, Hit-Toleranz, Alarm) · Darstellung (nach Hit behalten, Max-Levels, Alle löschen, Farben) |
 
 Defaults: Gewichte Delta 20 / Volumen 15 / Absorption 20 / VWAP 15 / Imbalance 15 /
 vPOC 15 (Summe 100), Signal-Schwelle 50, Min-Score 60, Perzentil 95, Lookback 50.
+Marker: **Signal- und Reversal-Marker getrennt** schaltbar.
 
 ## Hinweise
 
@@ -154,8 +188,8 @@ vPOC 15 (Summe 100), Signal-Schwelle 50, Min-Score 60, Perzentil 95, Lookback 50
 - Absorption ist als **Reversal** modelliert (Aggressor absorbiert → Gegenrichtung).
 - Auf Charts ohne Footprint-Daten nutzen die Footprint-Bedingungen Fallbacks (Candle-Delta);
   Imbalance/vPOC benötigen Cluster-Daten und eine gültige Tick-Größe.
-- **Tape** ist live-only (v1). Historisches Tape (via `RequestForCumulativeTrades`, wie
-  semaPHoreks „Get Historical Data") wäre v2.
+- Die **Tape-Bedingung** (#7) ist live-only. Die **Big-Trade-Levels** dagegen nutzen bereits
+  `RequestForCumulativeTrades` (wie semaPHoreks „Get Historical Data") und überleben Reloads.
 - Noch nicht enthalten (bewusst): **Finished Business** (unscharf definiert).
 
 ## Build & Installation

@@ -94,7 +94,17 @@ so fallen Trend-„Treppen" weg, die weder Divergenz noch echte Absorption haben
 wenn die <strong>Folgekerze in Umkehr-Richtung schließt</strong> (Long-Raute: nächste Kerze höher; Short: tiefer).
 Kandidaten, die sofort weiterliefen, fallen raus — 1 Bar Verzögerung für deutlich höhere Qualität. Live bleibt die
 Raute „pending", bis die Bestätigungskerze schließt.</p>
-<p>Eigener Score (0–100 %), feuert ab <code>Reversal-Schwelle</code>; Gewichte je Teil-Bedingung einstellbar.</p>
+<p><strong>Impuls-Filter gegen Gegentrend-Picken</strong> (<code>Impuls-Filter</code>, Toggle, <strong>Default AUS</strong>):
+Misst die <strong>Effizienz</strong> des Beins ins Extrem (|Netto-Weg| / Pfadlänge). Ist das ein gesunder, gerichteter Impuls
+(Effizienz ≥ <code>Impuls-Effizienz-Schwelle</code>), reicht Absorption allein nicht — es braucht dann echte
+<strong>CVD-Divergenz</strong>, und die muss <strong>signifikant</strong> sein (CVD-Bruch ≥ <code>min. Divergenz</code> ×
+Ø-Bar-Delta, kein Rauschen). Filtert Konter-Trend-Picks in laufenden Trends heraus, ohne echte Erschöpfungs-Umkehren zu
+verlieren. Wirkt rückwirkend (Historie wird neu berechnet).</p>
+<p><strong>Telegram-Alarm bei Umkehr</strong> (<code>Alarm bei Umkehr</code>, Default aus): löst bei <strong>bestätigter</strong>
+Umkehr einen ATAS-Alarm aus (über die native ATAS-Telegram-Anbindung), optional nur Long- oder nur Short-Umkehren. Nur live
+ab dem Laden, nicht rückwirkend (Anti-Spam-Latch).</p>
+<p>Eigener Score (0–100 %), feuert ab <code>Reversal-Schwelle</code>; Gewichte je Teil-Bedingung einstellbar.
+Signal- und Reversal-Marker sind <strong>getrennt schaltbar</strong>.</p>
 
 <h2>Range-Detektor &amp; Balance-Range</h2>
 <p>
@@ -124,6 +134,20 @@ werden nur Reversal-Rauten gezeigt, deren Extrem innerhalb <code>Kanten-Toleranz
 <strong>Range-Kante</strong> (High / Low / vPOC) liegt = Sniper-Entries an den Balance-Kanten. Ändert die gespeicherten
 Signale <strong>nicht</strong>; aus = bestehendes Verhalten unverändert.
 </p>
+
+<h2>Big-Trade-Levels</h2>
+<p>
+Markiert <strong>große Einzeltrades</strong> (separated Prints, nicht kumulativ) als horizontale <strong>Levels</strong> —
+der Preis, an dem ein großer Player Position aufgebaut/verteidigt hat.
+<span class="bull">grün</span> = Big-Buy, <span class="bear">rot</span> = Big-Sell; die Kontraktzahl steht am Level.
+</p>
+<ul>
+  <li><strong>Session-abhängige Schwelle:</strong> <code>Min-Kontrakte London</code> (z.B. 20–30) im London-Fenster, sonst <code>Min-Kontrakte US/Default</code> (z.B. 40) — automatisch nach Uhrzeit.</li>
+  <li><strong>Re-Test-Alarm:</strong> verlässt der Preis das Level um <code>Arm-Distanz</code> (Ticks) und läuft es später wieder an (<code>Hit-Toleranz</code>), feuert ein einmaliger Telegram-Alarm.</li>
+  <li><strong>Nach Hit behalten</strong> (Default an): getroffene Levels bleiben als gedimmte, gestrichelte Referenz sichtbar (hält oder bricht der Preis dort?).</li>
+  <li><strong>Historien-Rekonstruktion:</strong> die Levels werden beim Laden aus historischen Trades (<code>RequestForCumulativeTrades</code>) neu aufgebaut → sie überleben Chart-/Hot-Reload.</li>
+  <li><strong>Aufräumen:</strong> <code>Max. sichtbare Levels</code> begrenzt die Anzahl; <strong>Ctrl + Links-Klick</strong> löscht eine Linie einzeln; Button „Alle löschen" räumt alle. Big-Buy und Big-Sell am selben Preis werden zu einer Linie zusammengefasst (Label mit Buy/Sell-Split).</li>
+</ul>
 
 <h2>Perzentil-Auto-Kalibrierung</h2>
 <p>
@@ -175,16 +199,18 @@ Der <strong>sich bildende Bar repaintet</strong> bis zum Schluss; Marker auf abg
 </div>
 
 <h2>Einstellungen</h2>
+<p>
+Die Settings sind in <strong>Reiter</strong> organisiert (wie ATAS-Standardindikatoren), je Reiter aufklappbare
+<strong>Untergruppen</strong>. Jede Option hat einen <strong>Tooltip</strong>; ausgewählte Tuning-Werte sind
+<strong>Schieberegler</strong> (Standardwert im Tooltip vermerkt); abhängige Optionen erscheinen nur, wenn ihr Schalter aktiv ist.
+</p>
 <table>
-  <tr><th>Gruppe</th><th>Einstellung</th></tr>
-  <tr><td>Allgemein</td><td>Lookback (N), Signal-Schwelle, Signal-Cooldown, Min-Score für Marker, HUD/Marker/Kalibrierung anzeigen</td></tr>
-  <tr><td>Kalibrierung</td><td>Globaler Perzentil, Advanced-Override, Freeze, Perzentil je Bedingung</td></tr>
-  <tr><td>Bedingungen</td><td>Delta / Volumen / Absorption / VWAP / Imbalance (Ratio, Mindest-Anzahl) / vPOC / Tape (Min-Kontrakte) — je aktiv + Gewicht</td></tr>
-  <tr><td>Reversal</td><td>aktiv, Lookback, Schwelle, Gewichte (Divergenz / Absorption / vPOC / Exhaustion), Folgekerzen-Bestätigung, Nur an Range-Kanten + Kanten-Toleranz</td></tr>
-  <tr><td>Range-Detektor</td><td>aktiv, Lookback, Min-Bars, Breiten-Faktor (×ATR), Breiten-ATR Periode, Volumen-Akzeptanz (+ vPOC-/Min-Volumen-Faktor), Box-Merging (+ max. Lücke)</td></tr>
-  <tr><td>Balance-Range</td><td>aktiv (Default aus), Range-Lookback, Value-Area %, Linien verlängern</td></tr>
-  <tr><td>Darstellung</td><td>Schriftgröße, Position (oben links/rechts), Abstände, Marker-Abstand (Ticks)</td></tr>
-  <tr><td>Farben</td><td>Bull / Bear / Neutral / Hintergrund / Reversal / Range-Band / Ränder / vPOC / Break Up/Down/Flat</td></tr>
+  <tr><th>Reiter</th><th>Untergruppen / Inhalt</th></tr>
+  <tr><td><strong>Allgemein</strong></td><td>Allgemein (Lookback) · HUD &amp; Panel (HUD an, Kalibrierung, Schrift, Position, Hintergrund) · Alarm (Sound, Test)</td></tr>
+  <tr><td><strong>Signal</strong></td><td>Signal (Schwelle, Cooldown) · Marker (Signal-Marker an, Min-Score, Abstand, Farben) · Kalibrierung (Perzentil global/Advanced/Freeze) · Bedingung: Delta / Volumen / Absorption / VWAP / Imbalance / vPOC / Tape (je aktiv + Gewicht)</td></tr>
+  <tr><td><strong>Reversal</strong></td><td>Reversal (aktiv, Reversal-Marker an, Lookback, Schwelle) · Treiber-Gewichte (Divergenz/Absorption/vPOC/Exhaustion/Speed) · Impuls-Filter (Effizienz, min. Divergenz) · Bestätigung &amp; Kanten · Alarm · Farben</td></tr>
+  <tr><td><strong>Range</strong></td><td>Detektor (aktiv, Lookback, Min-Bars, Breiten-Faktor ×ATR, ATR-Periode, Volumen-Akzeptanz + vPOC-/Min-Vol-Faktor, Merging + Lücke) · Referenzband (Balance-Range, Value-Area %) · Farben</td></tr>
+  <tr><td><strong>Big Trades</strong></td><td>Erkennung (aktiv, separated, Min-Kontrakte London/US, London-Fenster) · Re-Test &amp; Hit (Arm-Distanz, Hit-Toleranz, Alarm) · Darstellung (nach Hit behalten, Max-Levels, Alle löschen, Farben)</td></tr>
 </table>
 <p>
 Default-Gewichte: Delta 20, Volumen 15, Absorption 20, VWAP 15, Imbalance 15, vPOC 15 (Summe 100), Signal-Schwelle 50, Min-Score 60, Perzentil 95, Lookback 50.
