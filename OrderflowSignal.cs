@@ -252,6 +252,19 @@ namespace OrderflowSignal
         private int _candStart;
         private decimal _candHi, _candLo, _candWidth;
 
+        // Imbalance-Zonen: gestapelte Footprint-Imbalances (Bid/Ask-Dominanz) als
+        // verteidigte Preiszonen. Aus historischen Candle-Clustern -> ueberlebt Reload.
+        private sealed class ImbZone { public decimal Low, High; public int Dir; public int Bar; public int Stack; public bool Armed; public bool Filled; public bool Alerted; }
+        private readonly List<ImbZone> _imbZones = new();
+        private bool _imbZonesEnabled = false;
+        private int _imbZoneMinStack = 3;        // min. konsekutive imbalanced Level
+        private decimal _imbZoneRatio = 3.0m;    // Ask >= Ratio*Bid (bzw. umgekehrt); 0-Gegenseite = extrem
+        private int _imbZoneMaxZones = 20;
+        private int _imbZoneArmTicks = 8;        // Preis muss so weit weg sein, bevor Re-Test zaehlt
+        private bool _imbZoneAlertOnHit = true;
+        private Color _colorImbBuy = Color.FromArgb(60, 70, 200, 120);
+        private Color _colorImbSell = Color.FromArgb(60, 230, 100, 100);
+
         // Zuletzt berechnete Schwellen (fuer HUD + Freeze-Snapshot).
         private decimal _liveVolThr, _liveDeltaThr, _liveAbsThr;
         // Eingefrorene Schwellen (gehalten, solange Freeze aktiv ist).
@@ -708,6 +721,53 @@ namespace OrderflowSignal
         [Display(Name = "Farbe Big-Sell-Level", GroupName = "Darstellung", Order = 542,
             Description = "Farbe der Big-Sell-Level (Verkaeufer-verteidigt).")]
         public Color ColorBigSell { get => _colorBigSell; set { _colorBigSell = value; RedrawChart(); } }
+
+        // ── Imbalance-Zonen ────────────────────────────────────────────────
+        [Tab(TabName = "Imbalance", TabOrder = 6)]
+        [Display(Name = "Imbalance-Zonen aktiv", GroupName = "Erkennung", Order = 600,
+            Description = "Gestapelte Footprint-Imbalances (Bid/Ask-Dominanz) als verteidigte Preiszonen markieren. Aus historischen Candle-Clustern -> ueberlebt Reload. Default aus.")]
+        public bool ImbZonesEnabled { get => _imbZonesEnabled; set { _imbZonesEnabled = value; RecalculateValues(); } }
+
+        [Tab(TabName = "Imbalance", TabOrder = 6)]
+        [Display(Name = "Min-Stack (konsekutive Level)", GroupName = "Erkennung", Order = 602,
+            Description = "So viele direkt benachbarte Preislevel muessen dieselbe Seite imbalanced sein, damit eine Zone entsteht (Footprint-Standard). Standard: 3.")]
+        [Range(2, 20)]
+        [NumericEditor(NumericEditorTypes.TrackBar, 2, 20, Step = 1)]
+        public int ImbZoneMinStack { get => _imbZoneMinStack; set { _imbZoneMinStack = Math.Clamp(value, 2, 20); RecalculateValues(); } }
+
+        [Tab(TabName = "Imbalance", TabOrder = 6)]
+        [Display(Name = "Imbalance-Ratio", GroupName = "Erkennung", Order = 604,
+            Description = "Ask[p] >= Ratio * Bid[p-Tick] (Buy) bzw. umgekehrt. 0 auf der Gegenseite = extreme Imbalance (Single Print). Standard: 3.0.")]
+        [Range(1.0, 20.0)]
+        [NumericEditor(NumericEditorTypes.TrackBar, 1.0, 20.0, Step = 0.5, DisplayFormat = "0.0")]
+        public decimal ImbZoneRatio { get => _imbZoneRatio; set { _imbZoneRatio = Math.Max(1m, value); RecalculateValues(); } }
+
+        [Tab(TabName = "Imbalance", TabOrder = 6)]
+        [Display(Name = "Max. sichtbare Zonen", GroupName = "Erkennung", Order = 606,
+            Description = "Obergrenze gleichzeitig gehaltener Zonen. Aeltere fallen raus. Standard: 20.")]
+        [Range(1, 200)]
+        public int ImbZoneMaxZones { get => _imbZoneMaxZones; set { _imbZoneMaxZones = Math.Clamp(value, 1, 200); RecalculateValues(); } }
+
+        [Tab(TabName = "Imbalance", TabOrder = 6)]
+        [Display(Name = "Arm-Distanz (Ticks)", GroupName = "Re-Test & Hit", Order = 610,
+            Description = "So weit muss der Preis von der Zone weg sein, bevor ein erneutes Anlaufen als Re-Test/Hit zaehlt. Standard: 8.")]
+        [Range(0, 1000)]
+        public int ImbZoneArmTicks { get => _imbZoneArmTicks; set { _imbZoneArmTicks = Math.Max(0, value); RecalculateValues(); } }
+
+        [Tab(TabName = "Imbalance", TabOrder = 6)]
+        [Display(Name = "Alarm bei Zonen-Hit (Telegram)", GroupName = "Re-Test & Hit", Order = 612,
+            Description = "ATAS-/Telegram-Alarm ausloesen, wenn der Preis eine offene Imbalance-Zone wieder anlaeuft.")]
+        public bool ImbZoneAlertOnHit { get => _imbZoneAlertOnHit; set { _imbZoneAlertOnHit = value; } }
+
+        [Tab(TabName = "Imbalance", TabOrder = 6)]
+        [Display(Name = "Farbe Buy-Zone", GroupName = "Darstellung", Order = 620,
+            Description = "Fuellfarbe fuer Buy-Imbalance-Zonen (Ask-Dominanz).")]
+        public Color ColorImbBuy { get => _colorImbBuy; set { _colorImbBuy = value; RedrawChart(); } }
+
+        [Tab(TabName = "Imbalance", TabOrder = 6)]
+        [Display(Name = "Farbe Sell-Zone", GroupName = "Darstellung", Order = 622,
+            Description = "Fuellfarbe fuer Sell-Imbalance-Zonen (Bid-Dominanz).")]
+        public Color ColorImbSell { get => _colorImbSell; set { _colorImbSell = value; RedrawChart(); } }
 
         // ── Balance-Range ──────────────────────────────────────────────────
         [Tab(TabName = "Range", TabOrder = 4)]
@@ -1207,6 +1267,122 @@ namespace OrderflowSignal
             return barPtr;
         }
 
+        // Imbalance-Zonen fuer eine Kerze verarbeiten: (1) offene Zonen gegen diese Kerze
+        // auf Arm/Fill/Approach pruefen, (2) optional neue Zonen aus dem Footprint erkennen.
+        // Fill = die Zone wird GEGEN-imbalanced (durchgenadelt), nicht schon beim Touch.
+        private void ProcessImbZones(int bar, IndicatorCandle c, bool detectNew)
+        {
+            if (!_imbZonesEnabled || c == null)
+                return;
+            decimal tick = InstrumentInfo?.TickSize ?? 0m;
+            if (tick <= 0)
+                return;
+
+            var bid = new Dictionary<decimal, decimal>();
+            var ask = new Dictionary<decimal, decimal>();
+            foreach (var pv in c.GetAllPriceLevels())
+            {
+                bid[pv.Price] = pv.Bid;
+                ask[pv.Price] = pv.Ask;
+            }
+            if (bid.Count == 0)
+                return;
+
+            bool BuyImb(decimal p)
+            {
+                if (!ask.TryGetValue(p, out var a) || a <= 0) return false;
+                decimal b = bid.TryGetValue(p - tick, out var bv) ? bv : 0m;
+                return b <= 0 ? true : a >= _imbZoneRatio * b;   // 0-Gegenseite = extrem
+            }
+            bool SellImb(decimal p)
+            {
+                if (!bid.TryGetValue(p, out var b) || b <= 0) return false;
+                decimal a = ask.TryGetValue(p + tick, out var av) ? av : 0m;
+                return a <= 0 ? true : b >= _imbZoneRatio * a;
+            }
+
+            // (1) Arm / Fill / Approach gegen bestehende, aeltere offene Zonen.
+            decimal armDist = tick * _imbZoneArmTicks;
+            foreach (var z in _imbZones)
+            {
+                if (z.Filled || z.Bar >= bar)
+                    continue;
+                if (!z.Armed && (c.Low > z.High + armDist || c.High < z.Low - armDist))
+                    z.Armed = true;   // Preis hat die Zone verlassen -> scharf
+
+                // Fill: Gegen-Imbalance IN der Zone (buy-Zone durch sell-Imbalance gefuellt).
+                bool counter = false;
+                foreach (var p in bid.Keys)
+                {
+                    if (p < z.Low || p > z.High) continue;
+                    if (z.Dir > 0 ? SellImb(p) : BuyImb(p)) { counter = true; break; }
+                }
+                if (counter) { z.Filled = true; continue; }
+
+                // Approach-Alarm: scharf + Preis wieder in der Zone (einmalig).
+                if (z.Armed && !z.Alerted && c.Low <= z.High && c.High >= z.Low)
+                {
+                    z.Alerted = true;
+                    if (_histDone && _imbZoneAlertOnHit)
+                        FireImbZoneAlert(z, c);
+                }
+            }
+
+            // (2) Neue Zonen aus diesem (abgeschlossenen) Bar.
+            if (detectNew)
+            {
+                var prices = bid.Keys.ToList();
+                prices.Sort();
+                FindImbStacks(prices, tick, 1, BuyImb, bar);
+                FindImbStacks(prices, tick, -1, SellImb, bar);
+            }
+        }
+
+        // Laeufe konsekutiver imbalanced Level finden; ab Min-Stack als Zone speichern.
+        private void FindImbStacks(List<decimal> prices, decimal tick, int dir, Func<decimal, bool> isImb, int bar)
+        {
+            int i = 0;
+            while (i < prices.Count)
+            {
+                if (!isImb(prices[i])) { i++; continue; }
+                int j = i;
+                while (j + 1 < prices.Count
+                       && Math.Abs(prices[j + 1] - (prices[j] + tick)) < tick * 0.5m
+                       && isImb(prices[j + 1]))
+                    j++;
+                if (j - i + 1 >= _imbZoneMinStack)
+                    AddImbZone(prices[i], prices[j], dir, bar, j - i + 1);
+                i = j + 1;
+            }
+        }
+
+        // Zone speichern; ueberlappende offene Zonen gleicher Richtung verschmelzen.
+        private void AddImbZone(decimal low, decimal high, int dir, int bar, int stack)
+        {
+            foreach (var z in _imbZones)
+            {
+                if (!z.Filled && z.Dir == dir && low <= z.High && z.Low <= high)
+                {
+                    z.Low = Math.Min(z.Low, low);
+                    z.High = Math.Max(z.High, high);
+                    z.Stack = Math.Max(z.Stack, stack);
+                    return;
+                }
+            }
+            _imbZones.Add(new ImbZone { Low = low, High = high, Dir = dir, Bar = bar, Stack = stack });
+            while (_imbZones.Count > _imbZoneMaxZones && _imbZones.Count > 0)
+                _imbZones.RemoveAt(0);
+        }
+
+        private void FireImbZoneAlert(ImbZone z, IndicatorCandle c)
+        {
+            string side = z.Dir > 0 ? "Buy" : "Sell";
+            string instr = InstrumentInfo?.Instrument ?? "";
+            AlertsEnabled = true;
+            try { AddAlert(_alertSound, $"Imbalance-Zone {z.Low}-{z.High} ({side}, Stack {z.Stack}) angelaufen | {instr} | {c?.LastTime:HH:mm}"); }
+            catch { }
+        }
+
         private void ResetState()
         {
             _volArr.Clear();
@@ -1228,6 +1404,7 @@ namespace OrderflowSignal
             _detRanges.Clear();
             _lastDetBar = -1;
             _candActive = false;
+            _imbZones.Clear();   // werden aus der Historie (Candle-Cluster) neu erkannt
             // _frz* NICHT zuruecksetzen -> eingefrorene Kalibrierung ueberlebt Recalc.
             _hudBull = _hudBear = _hudSignal = _hudRev = 0;
             _hudTags = "";
@@ -1285,6 +1462,9 @@ namespace OrderflowSignal
             // Alarm (Telegram via ATAS) — NUR live (nach Historien-Nachladen), nicht rueckwirkend.
             if (rev != 0 && _histDone && _alertOnReversal)
                 FireReversalAlert(bar, rev, c);
+
+            // Imbalance-Zonen: erst offene Zonen gegen diesen Bar pruefen, dann neue erkennen.
+            ProcessImbZones(bar, c, detectNew: true);
         }
 
         // Loest einen ATAS-Alarm aus (geht automatisch durch die konfigurierte
@@ -1358,6 +1538,8 @@ namespace OrderflowSignal
 
             // Big-Trade-Levels: Re-Test/Hit gegen den Live-Bar pruefen (Alarm).
             CheckBigLevelHits(c, last);
+            // Imbalance-Zonen: Live-Approach/Fill gegen den Live-Bar (keine neuen Zonen live).
+            ProcessImbZones(last, c, detectNew: false);
         }
 
         // ─────────────────────────────────────────────────────────────────
@@ -2120,6 +2302,7 @@ namespace OrderflowSignal
 
             DrawBalanceRange(context);
             DrawDetectorRanges(context);
+            DrawImbZones(context);
             DrawBigLevels(context);
 
             if (_showMarkers)
@@ -2226,6 +2409,39 @@ namespace OrderflowSignal
             context.DrawLine(edgePen, xStart, yVah, xEnd, yVah);
             context.DrawLine(edgePen, xStart, yVal, xEnd, yVal);
             context.DrawLine(new RenderPen(_colorRangePoc, 1), xStart, yPoc, xEnd, yPoc);
+        }
+
+        // Offene Imbalance-Zonen als gefuellte Boxen (nach rechts verlaengert = Target).
+        // Gefuellte (gegen-imbalanced) Zonen sind kein Target mehr -> nicht gezeichnet.
+        private void DrawImbZones(RenderContext context)
+        {
+            if (!_imbZonesEnabled)
+                return;
+            if (ChartInfo?.PriceChartContainer is not { } cont)
+                return;
+            var region = cont.Region;
+            foreach (var z in _imbZones)
+            {
+                if (z.Filled)
+                    continue;
+                int x1, yH, yL;
+                try
+                {
+                    x1 = Math.Max(region.Left, cont.GetXByBar(z.Bar, false));
+                    yH = cont.GetYByPrice(z.High, false);
+                    yL = cont.GetYByPrice(z.Low, false);
+                }
+                catch { continue; }
+                if (x1 > region.Right)
+                    x1 = region.Left;
+                int top = Math.Min(yH, yL);
+                int h = Math.Max(1, Math.Abs(yL - yH));
+                var box = new Rectangle(x1, top, region.Right - x1, h);
+                var col = z.Dir > 0 ? _colorImbBuy : _colorImbSell;
+                var edge = Color.FromArgb(Math.Min(255, col.A + 140), col.R, col.G, col.B);
+                context.FillRectangle(col, box);
+                context.DrawRectangle(new RenderPen(edge, 1), box);
+            }
         }
 
         private void DrawDetectorRanges(RenderContext context)
