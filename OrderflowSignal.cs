@@ -127,6 +127,8 @@ namespace OrderflowSignal
         private int _revVpocWeight = 20;      // vPOC im Docht
         private int _revExhWeight = 20;       // Exhaustion (duennes Aggressor-Vol)
         private int _revSpeedWeight = 15;     // Speed of Tape: Klimax-Spike am Extrem
+        private int _revImbWeight = 0;        // (A) frischer Imbalance-Flip am Extrem (Default aus)
+        private int _revAuctionWeight = 0;    // (B) Finished Auction am Extrem (Default aus)
         private decimal _revSpeedFactor = 1.5m; // Spike, wenn Bar-Speed >= Faktor * Ø-Speed
         // Impuls-Filter: in einem gesunden, gerichteten Impuls braucht ein Gegentrend-
         // Reversal echte CVD-Divergenz (Absorption allein reicht nicht). Default AUS.
@@ -258,6 +260,7 @@ namespace OrderflowSignal
         private readonly List<ImbZone> _imbZones = new();
         private bool _imbZonesEnabled = false;
         private int _imbZoneMinStack = 3;        // min. konsekutive imbalanced Level
+        private int _imbSkipEdgeLevels = 1;      // Docht-Rand ignorieren (Finished-Auction-Tips)
         private decimal _imbZoneRatio = 3.0m;    // Ask >= Ratio*Bid (bzw. umgekehrt); 0-Gegenseite = extrem
         private int _imbZoneMaxZones = 20;
         private int _imbZoneArmTicks = 8;        // Preis muss so weit weg sein, bevor Re-Test zaehlt
@@ -542,6 +545,18 @@ namespace OrderflowSignal
         public int RevSpeedWeight { get => _revSpeedWeight; set { _revSpeedWeight = value; RecalculateValues(); } }
 
         [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Display(Name = "Gewicht Imbalance-Flip", GroupName = "Treiber-Gewichte", Order = 319,
+            Description = "(A) Frischer gestapelter Imbalance-Flip am Extrem (am Tief Buy-Stack, am Hoch Sell-Stack = Aggression kippt). Docht-Rand ausgeschlossen. 0 = aus (Default).")]
+        [Range(0, 100)]
+        public int RevImbWeight { get => _revImbWeight; set { _revImbWeight = value; RecalculateValues(); } }
+
+        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Display(Name = "Gewicht Finished Auction", GroupName = "Treiber-Gewichte", Order = 319,
+            Description = "(B) Auktion am Extrem ist abgeschlossen (kein Imbalance-Tip = Gegenseite hat gestoppt = Erschoepfung). Unfinished (Tip noch imbalanced) zaehlt nicht. 0 = aus (Default).")]
+        [Range(0, 100)]
+        public int RevAuctionWeight { get => _revAuctionWeight; set { _revAuctionWeight = value; RecalculateValues(); } }
+
+        [Tab(TabName = "Reversal", TabOrder = 3)]
         [Display(Name = "Speed-Spike Faktor (x Ø-Speed)", GroupName = "Treiber-Gewichte", Order = 320,
             Description = "Spike, wenn der Bar-Tape-Speed (Ticks/Sekunde) >= Faktor * Durchschnitt im Fenster. (Standard: 1.5)")]
         [Range(1.0, 10.0)]
@@ -734,6 +749,13 @@ namespace OrderflowSignal
         [Range(2, 20)]
         [NumericEditor(NumericEditorTypes.TrackBar, 2, 20, Step = 1)]
         public int ImbZoneMinStack { get => _imbZoneMinStack; set { _imbZoneMinStack = Math.Clamp(value, 2, 20); RecalculateValues(); } }
+
+        [Tab(TabName = "Imbalance", TabOrder = 6)]
+        [Display(Name = "Docht-Rand ignorieren (Level)", GroupName = "Erkennung", Order = 603,
+            Description = "So viele Preislevel am Kerzen-Hoch UND -Tief werden ignoriert (Imbalances direkt am Docht = Finished-Auction-Tips, uninteressant). Gilt auch fuer den Reversal-Imbalance-Flip. Standard: 1.")]
+        [Range(0, 10)]
+        [NumericEditor(NumericEditorTypes.TrackBar, 0, 10, Step = 1)]
+        public int ImbSkipEdgeLevels { get => _imbSkipEdgeLevels; set { _imbSkipEdgeLevels = Math.Clamp(value, 0, 10); RecalculateValues(); } }
 
         [Tab(TabName = "Imbalance", TabOrder = 6)]
         [Display(Name = "Imbalance-Ratio", GroupName = "Erkennung", Order = 604,
@@ -1328,13 +1350,19 @@ namespace OrderflowSignal
                 }
             }
 
-            // (2) Neue Zonen aus diesem (abgeschlossenen) Bar.
+            // (2) Neue Zonen aus diesem (abgeschlossenen) Bar. Docht-Rand ausschliessen
+            //     (Imbalances direkt am Kerzen-Hoch/-Tief = Finished-Auction-Tips, uninteressant).
             if (detectNew)
             {
                 var prices = bid.Keys.ToList();
                 prices.Sort();
-                FindImbStacks(prices, tick, 1, BuyImb, bar);
-                FindImbStacks(prices, tick, -1, SellImb, bar);
+                int skip = _imbSkipEdgeLevels;
+                if (prices.Count > 2 * skip)
+                {
+                    var interior = prices.GetRange(skip, prices.Count - 2 * skip);
+                    FindImbStacks(interior, tick, 1, BuyImb, bar);
+                    FindImbStacks(interior, tick, -1, SellImb, bar);
+                }
             }
         }
 
@@ -1372,6 +1400,90 @@ namespace OrderflowSignal
             _imbZones.Add(new ImbZone { Low = low, High = high, Dir = dir, Bar = bar, Stack = stack });
             while (_imbZones.Count > _imbZoneMaxZones && _imbZones.Count > 0)
                 _imbZones.RemoveAt(0);
+        }
+
+        // (A) Hat die Kerze einen frischen, gestapelten Imbalance-Flip in Richtung dir?
+        // dir > 0 = Buy-Stack (stuetzt Long-Umkehr am Tief), dir < 0 = Sell-Stack.
+        // Docht-Rand ausgeschlossen (kein Finished-Auction-Tip).
+        private bool HasImbStack(IndicatorCandle c, int dir)
+        {
+            decimal tick = InstrumentInfo?.TickSize ?? 0m;
+            if (tick <= 0 || c == null)
+                return false;
+            var bid = new Dictionary<decimal, decimal>();
+            var ask = new Dictionary<decimal, decimal>();
+            foreach (var pv in c.GetAllPriceLevels()) { bid[pv.Price] = pv.Bid; ask[pv.Price] = pv.Ask; }
+            if (bid.Count == 0)
+                return false;
+            var prices = bid.Keys.ToList();
+            prices.Sort();
+            int skip = _imbSkipEdgeLevels;
+            if (prices.Count <= 2 * skip)
+                return false;
+            var interior = prices.GetRange(skip, prices.Count - 2 * skip);
+
+            bool IsImb(decimal p)
+            {
+                if (dir > 0)
+                {
+                    if (!ask.TryGetValue(p, out var a) || a <= 0) return false;
+                    decimal b = bid.TryGetValue(p - tick, out var bv) ? bv : 0m;
+                    return b <= 0 ? true : a >= _imbZoneRatio * b;
+                }
+                if (!bid.TryGetValue(p, out var bd) || bd <= 0) return false;
+                decimal av = ask.TryGetValue(p + tick, out var a2) ? a2 : 0m;
+                return av <= 0 ? true : bd >= _imbZoneRatio * av;
+            }
+
+            int i = 0;
+            while (i < interior.Count)
+            {
+                if (!IsImb(interior[i])) { i++; continue; }
+                int j = i;
+                while (j + 1 < interior.Count
+                       && Math.Abs(interior[j + 1] - (interior[j] + tick)) < tick * 0.5m
+                       && IsImb(interior[j + 1]))
+                    j++;
+                if (j - i + 1 >= _imbZoneMinStack)
+                    return true;
+                i = j + 1;
+            }
+            return false;
+        }
+
+        // (B) Ist die Auktion am Extrem ABGESCHLOSSEN? Unfinished = Imbalance-Print am
+        // aeussersten Level (Low: Sell-Imbalance, High: Buy-Imbalance) -> Momentum evtl.
+        // weiter, Umkehr riskant. Finished = Gegenseite hat gestoppt -> stuetzt Umkehr.
+        private bool AuctionFinishedAtExtreme(IndicatorCandle c, bool atLow)
+        {
+            decimal tick = InstrumentInfo?.TickSize ?? 0m;
+            if (tick <= 0 || c == null)
+                return false;
+            var bid = new Dictionary<decimal, decimal>();
+            var ask = new Dictionary<decimal, decimal>();
+            decimal ext = atLow ? decimal.MaxValue : decimal.MinValue;
+            foreach (var pv in c.GetAllPriceLevels())
+            {
+                bid[pv.Price] = pv.Bid; ask[pv.Price] = pv.Ask;
+                if (atLow ? pv.Price < ext : pv.Price > ext) ext = pv.Price;
+            }
+            if (bid.Count == 0)
+                return false;
+
+            if (atLow)
+            {
+                decimal b = bid.TryGetValue(ext, out var bv) ? bv : 0m;
+                decimal a = ask.TryGetValue(ext + tick, out var av) ? av : 0m;
+                bool unfinished = b > 0 && (a <= 0 ? true : b >= _imbZoneRatio * a);
+                return !unfinished;
+            }
+            else
+            {
+                decimal a = ask.TryGetValue(ext, out var av) ? av : 0m;
+                decimal b = bid.TryGetValue(ext - tick, out var bv) ? bv : 0m;
+                bool unfinished = a > 0 && (b <= 0 ? true : a >= _imbZoneRatio * b);
+                return !unfinished;
+            }
         }
 
         private void FireImbZoneAlert(ImbZone z, IndicatorCandle c)
@@ -2112,7 +2224,8 @@ namespace OrderflowSignal
             path += Math.Abs(c.Close - prevClose);   // aktuellen Bar in den Pfad einbeziehen
             decimal avgAbsDelta = speedN > 0 ? sumAbsDelta / speedN : 0m;
 
-            int totalW = _revDivWeight + _revAbsWeight + _revVpocWeight + _revExhWeight + _revSpeedWeight;
+            int totalW = _revDivWeight + _revAbsWeight + _revVpocWeight + _revExhWeight + _revSpeedWeight
+                       + _revImbWeight + _revAuctionWeight;
             if (totalW <= 0)
                 totalW = 1;
 
@@ -2152,6 +2265,8 @@ namespace OrderflowSignal
                     if (VpocWickDir(c) > 0) s += _revVpocWeight;          // POC im unteren Docht
                     if (ExhaustionAtExtreme(c, true)) s += _revExhWeight; // duennes Verkaufsvol am Tief
                     if (speedSpike) s += _revSpeedWeight;                 // Klimax-Tape am Tief
+                    if (_revImbWeight > 0 && HasImbStack(c, 1)) s += _revImbWeight;                 // (A) Buy-Imbalance-Flip
+                    if (_revAuctionWeight > 0 && AuctionFinishedAtExtreme(c, true)) s += _revAuctionWeight; // (B) Finished Auction am Tief
                     int pct = (int)Math.Round(100.0 * s / totalW);
                     if (pct >= _reversalThreshold)
                         return pct;
@@ -2179,6 +2294,8 @@ namespace OrderflowSignal
                     if (VpocWickDir(c) < 0) s += _revVpocWeight;
                     if (ExhaustionAtExtreme(c, false)) s += _revExhWeight;
                     if (speedSpike) s += _revSpeedWeight;                 // Klimax-Tape am Hoch
+                    if (_revImbWeight > 0 && HasImbStack(c, -1)) s += _revImbWeight;                  // (A) Sell-Imbalance-Flip
+                    if (_revAuctionWeight > 0 && AuctionFinishedAtExtreme(c, false)) s += _revAuctionWeight; // (B) Finished Auction am Hoch
                     int pct = (int)Math.Round(100.0 * s / totalW);
                     if (pct >= _reversalThreshold)
                         return -pct;
