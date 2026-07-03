@@ -222,7 +222,7 @@ namespace OrderflowSignal
 
         // Big-Trade-Levels: grosse Prints als verteidigte Levels. Aus OnCumulativeTrade
         // (Fremd-Thread) befuellt -> per Lock geschuetzt.
-        private sealed class BigLevel { public decimal Price; public int Volume; public int Dir; public int Bar; public bool Armed; public bool Hit; }
+        private sealed class BigLevel { public decimal Price; public int Volume; public int BuyVol; public int SellVol; public int Dir; public int Bar; public bool Armed; public bool Hit; }
         private readonly object _bigLock = new();
         private readonly List<BigLevel> _bigLevels = new();
         private int _bigMaxLevels = 20;   // Obergrenze sichtbarer Levels (gegen Zumuellen)
@@ -838,7 +838,9 @@ namespace OrderflowSignal
             return london ? _bigMinLondon : _bigMinDefault;
         }
 
-        // Big-Trade als Level speichern (Dedupe am gleichen Preis -> Volumen aufaddieren).
+        // Big-Trade als Level speichern. Dedupe am gleichen Preis unabhaengig von der
+        // Richtung -> Buy und Sell am selben Preis werden EINE Linie (kein Ueberlappen).
+        // Buy/Sell-Volumen getrennt gefuehrt, Richtung = dominante Seite.
         private void AddBigLevel(decimal price, int vol, int dir, int bar)
         {
             decimal tick = InstrumentInfo?.TickSize ?? 0m;
@@ -847,14 +849,20 @@ namespace OrderflowSignal
             {
                 foreach (var l in _bigLevels)
                 {
-                    if (!l.Hit && Math.Sign(l.Dir) == Math.Sign(dir) && Math.Abs(l.Price - price) <= tol)
+                    if (!l.Hit && Math.Abs(l.Price - price) <= tol)
                     {
-                        l.Volume += vol;
+                        if (dir > 0) l.BuyVol += vol; else l.SellVol += vol;
+                        l.Volume = l.BuyVol + l.SellVol;
+                        l.Dir = l.BuyVol >= l.SellVol ? 1 : -1;   // dominante Seite
                         l.Bar = bar;
                         return;
                     }
                 }
-                _bigLevels.Add(new BigLevel { Price = price, Volume = vol, Dir = dir, Bar = bar });
+                _bigLevels.Add(new BigLevel
+                {
+                    Price = price, Volume = vol, Dir = dir, Bar = bar,
+                    BuyVol = dir > 0 ? vol : 0, SellVol = dir < 0 ? vol : 0
+                });
                 while (_bigLevels.Count > _bigMaxLevels && _bigLevels.Count > 0)
                     _bigLevels.RemoveAt(0);
             }
@@ -1960,12 +1968,20 @@ namespace OrderflowSignal
                 return;
 
             var region = cont.Region;
+            const int minGapPx = 4;   // Mindestabstand zweier Linien in Pixeln
             lock (_bigLock)
             {
-                foreach (var l in _bigLevels)
+                // Bevorzugt aktive (durchgezogene) vor gehitteten, groessere vor kleineren.
+                // So gewinnt bei Pixel-Kollision das wichtigere Level.
+                var ordered = _bigLevels
+                    .Where(l => !l.Hit || _bigKeepAfterHit)
+                    .OrderBy(l => l.Hit ? 1 : 0)
+                    .ThenByDescending(l => l.Volume)
+                    .ToList();
+
+                var usedY = new List<int>();
+                foreach (var l in ordered)
                 {
-                    if (l.Hit && !_bigKeepAfterHit)
-                        continue;   // gehittet -> entfernen (falls behalten aus)
                     int y, x1;
                     try
                     {
@@ -1976,18 +1992,29 @@ namespace OrderflowSignal
                     if (x1 > region.Right)
                         x1 = region.Left;
 
+                    // Pixel-Sperre: schon eine Linie auf (fast) gleicher Hoehe? -> ueberspringen.
+                    if (usedY.Any(uy => Math.Abs(uy - y) < minGapPx))
+                        continue;
+                    usedY.Add(y);
+
+                    // Label: bei gemischten Prints Buy/Sell getrennt, sonst Gesamtvolumen.
+                    string label = (l.BuyVol > 0 && l.SellVol > 0)
+                        ? $"{l.BuyVol}/{l.SellVol}"
+                        : l.Volume.ToString();
+                    int lblX = region.Right - 12 - (int)context.MeasureString(label, _font).Width;
+
                     var baseCol = l.Dir > 0 ? _colorBigBuy : _colorBigSell;
                     if (l.Hit)
                     {
                         // gehittet: gedimmt + gestrichelt (Reaktion bleibt sichtbar).
                         var dim = Color.FromArgb(Math.Max(60, baseCol.A / 2), baseCol.R, baseCol.G, baseCol.B);
                         context.DrawLine(new RenderPen(dim, 1, System.Drawing.Drawing2D.DashStyle.Dash), x1, y, region.Right, y);
-                        context.DrawString(l.Volume.ToString(), _font, dim, region.Right - 46, y - 14);
+                        context.DrawString(label, _font, dim, lblX, y - 14);
                     }
                     else
                     {
                         context.DrawLine(new RenderPen(baseCol, 2), x1, y, region.Right, y);
-                        context.DrawString(l.Volume.ToString(), _font, baseCol, region.Right - 46, y - 14);
+                        context.DrawString(label, _font, baseCol, lblX, y - 14);
                     }
                 }
             }
