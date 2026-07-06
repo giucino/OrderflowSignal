@@ -129,6 +129,12 @@ namespace OrderflowSignal
         private int _revSpeedWeight = 15;     // Speed of Tape: Klimax-Spike am Extrem
         private int _revImbWeight = 0;        // (A) frischer Imbalance-Flip am Extrem (Default aus)
         private int _revAuctionWeight = 0;    // (B) Finished Auction am Extrem (Default aus)
+
+        // Reversal-Diagnose: Treiber-Aufschluesselung der letzten ANGEZEIGTEN Raute.
+        private bool _showRevDebug = false;
+        private int _revCandDir, _revCandPct; private decimal _revCandEff; private bool _revCandStrong; private string _revCandTags = "";
+        private int _revDbgBar = -1, _revDbgDir, _revDbgPct; private decimal _revDbgEff; private bool _revDbgStrong; private string _revDbgTags = "";
+        private readonly Dictionary<int, string> _revDbgByBar = new();   // Treiber-Tag je Raute (Diagnose)
         private decimal _revSpeedFactor = 1.5m; // Spike, wenn Bar-Speed >= Faktor * Ø-Speed
         // Impuls-Filter: in einem gesunden, gerichteten Impuls braucht ein Gegentrend-
         // Reversal echte CVD-Divergenz (Absorption allein reicht nicht). Default AUS.
@@ -502,6 +508,11 @@ namespace OrderflowSignal
         [Display(Name = "Reversal-Marker anzeigen", GroupName = "Reversal", Order = 301,
             Description = "Zeigt die Reversal-Rauten. Unabhaengig vom Signal-Marker-Schalter (Reiter Signal).")]
         public bool ShowReversalMarkers { get => _showReversalMarkers; set { _showReversalMarkers = value; RedrawChart(); } }
+
+        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Display(Name = "Reversal-Diagnose im HUD", GroupName = "Reversal", Order = 306,
+            Description = "Zeigt fuer die letzte angezeigte Raute die Treiber (GROSS = gefeuert): DIV/ABS/VP/EXH/SPD/IMB/AUC, plus Score, Effizienz (eff) und ob der Impuls-Filter das Bein als starken Impuls (IMP) einstufte. Zum Diagnostizieren, warum eine Raute kam.")]
+        public bool ShowRevDebug { get => _showRevDebug; set { _showRevDebug = value; RedrawChart(); } }
 
         [Tab(TabName = "Reversal", TabOrder = 3)]
         [Display(Name = "Reversal Lookback (Bars)", GroupName = "Reversal", Order = 302,
@@ -1044,7 +1055,7 @@ namespace OrderflowSignal
 
             string key = $"{_hudBull}|{_hudBear}|{_hudSignal}|{_hudRev}|{_hudTags}|{_hudWarn}|{_chartLabel}|" +
                          $"{_liveVolThr}|{_liveDeltaThr}|{_liveAbsThr}|{_freezeCalibration}|" +
-                         $"{_rangeVah}|{_rangeVal}|{_rangeVpoc}|{CurrentBar}";
+                         $"{_rangeVah}|{_rangeVal}|{_rangeVpoc}|{CurrentBar}|{_revDbgBar}|{_revDbgTags}";
             if (key != _lastRenderKey)
             {
                 _lastRenderKey = key;
@@ -1523,6 +1534,8 @@ namespace OrderflowSignal
             _revSignals.Clear();
             _lastSignalBar = -1;
             _lastRevBar = -1;
+            _revDbgBar = -1;
+            _revDbgByBar.Clear();
             _histDone = false;   // erst nach erneutem Historien-Nachladen wieder alarmieren
             // _bigReqDone NICHT zuruecksetzen: Levels ueberleben einen reinen Recalc.
             // Neu-Anfrage nur bei frischer Instanz (_bigReqDone==false) oder _bigDirty.
@@ -1583,7 +1596,13 @@ namespace OrderflowSignal
                 rev = 0;
             SetRevSignal(bar, rev);
             if (rev != 0)
+            {
                 _lastRevBar = bar;
+                // Diagnose der tatsaechlich ANGEZEIGTEN Raute festhalten.
+                _revDbgBar = bar; _revDbgDir = _revCandDir; _revDbgPct = _revCandPct;
+                _revDbgEff = _revCandEff; _revDbgStrong = _revCandStrong; _revDbgTags = _revCandTags;
+                _revDbgByBar[bar] = $"e{_revCandEff:0.0}{(_revCandStrong ? " IMP" : "")} {_revCandTags}";
+            }
 
             // Alarm (Telegram via ATAS) — NUR live (nach Historien-Nachladen), nicht rueckwirkend.
             if (rev != 0 && _histDone && _alertOnReversal)
@@ -2273,17 +2292,24 @@ namespace OrderflowSignal
 
                 if (divg || (absr && !strongDown))
                 {
+                    bool vpoc = VpocWickDir(c) > 0;                       // POC im unteren Docht
+                    bool exh = ExhaustionAtExtreme(c, true);              // duennes Verkaufsvol am Tief
+                    bool imb = _revImbWeight > 0 && HasImbStack(c, 1);    // (A) Buy-Imbalance-Flip
+                    bool auc = _revAuctionWeight > 0 && AuctionFinishedAtExtreme(c, true); // (B) Finished Auction am Tief
                     int s = 0;
                     if (divg) s += _revDivWeight;
                     if (absr) s += _revAbsWeight;
-                    if (VpocWickDir(c) > 0) s += _revVpocWeight;          // POC im unteren Docht
-                    if (ExhaustionAtExtreme(c, true)) s += _revExhWeight; // duennes Verkaufsvol am Tief
+                    if (vpoc) s += _revVpocWeight;
+                    if (exh) s += _revExhWeight;
                     if (speedSpike) s += _revSpeedWeight;                 // Klimax-Tape am Tief
-                    if (_revImbWeight > 0 && HasImbStack(c, 1)) s += _revImbWeight;                 // (A) Buy-Imbalance-Flip
-                    if (_revAuctionWeight > 0 && AuctionFinishedAtExtreme(c, true)) s += _revAuctionWeight; // (B) Finished Auction am Tief
+                    if (imb) s += _revImbWeight;
+                    if (auc) s += _revAuctionWeight;
                     int pct = (int)Math.Round(100.0 * s / totalW);
                     if (pct >= _reversalThreshold)
+                    {
+                        SetRevCand(1, pct, eff, strongDown, divg, absr, vpoc, exh, speedSpike, imb, auc);
                         return pct;
+                    }
                 }
             }
 
@@ -2302,21 +2328,37 @@ namespace OrderflowSignal
 
                 if (divg || (absr && !strongUp))
                 {
+                    bool vpoc = VpocWickDir(c) < 0;
+                    bool exh = ExhaustionAtExtreme(c, false);
+                    bool imb = _revImbWeight > 0 && HasImbStack(c, -1);   // (A) Sell-Imbalance-Flip
+                    bool auc = _revAuctionWeight > 0 && AuctionFinishedAtExtreme(c, false); // (B) Finished Auction am Hoch
                     int s = 0;
                     if (divg) s += _revDivWeight;
                     if (absr) s += _revAbsWeight;
-                    if (VpocWickDir(c) < 0) s += _revVpocWeight;
-                    if (ExhaustionAtExtreme(c, false)) s += _revExhWeight;
+                    if (vpoc) s += _revVpocWeight;
+                    if (exh) s += _revExhWeight;
                     if (speedSpike) s += _revSpeedWeight;                 // Klimax-Tape am Hoch
-                    if (_revImbWeight > 0 && HasImbStack(c, -1)) s += _revImbWeight;                  // (A) Sell-Imbalance-Flip
-                    if (_revAuctionWeight > 0 && AuctionFinishedAtExtreme(c, false)) s += _revAuctionWeight; // (B) Finished Auction am Hoch
+                    if (imb) s += _revImbWeight;
+                    if (auc) s += _revAuctionWeight;
                     int pct = (int)Math.Round(100.0 * s / totalW);
                     if (pct >= _reversalThreshold)
+                    {
+                        SetRevCand(-1, pct, eff, strongUp, divg, absr, vpoc, exh, speedSpike, imb, auc);
                         return -pct;
+                    }
                 }
             }
 
             return 0;
+        }
+
+        // Diagnose: Treiber-Aufschluesselung des aktuellen Reversal-Kandidaten merken.
+        private void SetRevCand(int dir, int pct, decimal eff, bool strong,
+            bool div, bool abs, bool vpoc, bool exh, bool spd, bool imb, bool auc)
+        {
+            _revCandDir = dir; _revCandPct = pct; _revCandEff = eff; _revCandStrong = strong;
+            string T(bool on, string u) => on ? u : u.ToLowerInvariant();
+            _revCandTags = $"{T(div, "DIV")} {T(abs, "ABS")} {T(vpoc, "VP")} {T(exh, "EXH")} {T(spd, "SPD")} {T(imb, "IMB")} {T(auc, "AUC")}";
         }
 
         // Tape-Speed der Kerze: Trades pro Sekunde (Ticks / Dauer). Historisch
@@ -2770,6 +2812,14 @@ namespace OrderflowSignal
                 var nsz = context.MeasureString(num, _font);
                 int numY = dir > 0 ? y + r + 1 : y - r - nsz.Height - 1;
                 context.DrawString(num, _font, col, x - nsz.Width / 2, numY);
+
+                // Diagnose-Tag je Raute (Treiber, eff, IMP).
+                if (_showRevDebug && _revDbgByBar.TryGetValue(b, out var dbg))
+                {
+                    var dsz = context.MeasureString(dbg, _font);
+                    int dbgY = dir > 0 ? numY + nsz.Height + 1 : numY - dsz.Height - 1;
+                    context.DrawString(dbg, _font, _colorDim, x - dsz.Width / 2, dbgY);
+                }
             }
         }
 
@@ -2799,6 +2849,14 @@ namespace OrderflowSignal
                 string rt = rev > 0 ? "LONG" : rev < 0 ? "SHORT" : "—";
                 var rc = rev > 0 ? _colorRevBull : rev < 0 ? _colorRevBear : _colorNeutral;
                 lines.Add(($"REV: {rt} {Math.Abs(rev)}", rc, _font));
+            }
+
+            if (_showRevDebug && _revDbgBar >= 0)
+            {
+                string d = _revDbgDir > 0 ? "L" : "S";
+                string imp = _revDbgStrong ? " IMP" : "";
+                lines.Add(($"dbg {d}{_revDbgPct}% eff{_revDbgEff:0.00}{imp}", _colorDim, _font));
+                lines.Add(($"{_revDbgTags}", _colorDim, _font));
             }
 
             if (_showCalibration)
