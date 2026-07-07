@@ -1804,8 +1804,10 @@ namespace OrderflowSignal
             decimal liveCumDelta = baseCd + c.Delta;
 
             int rev = RevEvaluate(last, c, signedMld, liveCumDelta);
-            if (rev != 0 && _revConfirm)
-                rev = 0;   // Folgekerze existiert noch nicht -> erst nach Bestaetigung (naechste Bar)
+            // Live-Bar: Bestaetigung (2-Kerzen / Reclaim / Trend-Gate) steht noch aus ->
+            // Raute erst nach Abschluss + Bestaetigung zeigen (kein Flackern/Umgehen).
+            if (rev != 0 && (_revConfirm || _revReclaim || _revTrendFilter))
+                rev = 0;
             if (rev != 0 && _lastRevBar >= 0 && _signalCooldownBars > 0
                 && (last - _lastRevBar) <= _signalCooldownBars)
                 rev = 0;
