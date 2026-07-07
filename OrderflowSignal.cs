@@ -2867,8 +2867,8 @@ namespace OrderflowSignal
             int ty = by + pad + lineH + 2;
             for (int i = 0; i < RevDriverColors.Length; i++)
             {
-                var c = RevDriverColors[i].Col;
-                var col = on[i] ? c : Color.FromArgb(70, c.R, c.G, c.B);   // gefeuert = hell, sonst gedimmt
+                // gefeuert = volle Treiber-Farbe, sonst klares Dunkelgrau (eindeutig "aus").
+                var col = on[i] ? RevDriverColors[i].Col : Color.FromArgb(255, 78, 82, 92);
                 context.DrawString(RevDriverColors[i].Name, _font, col, tx, ty);
                 tx += context.MeasureString(RevDriverColors[i].Name, _font).Width + gap;
             }
