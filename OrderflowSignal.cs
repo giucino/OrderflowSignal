@@ -130,10 +130,13 @@ namespace OrderflowSignal
         private int _revImbWeight = 0;        // (A) frischer Imbalance-Flip am Extrem (Default aus)
         private int _revAuctionWeight = 0;    // (B) Finished Auction am Extrem (Default aus)
         private decimal _revExhFactor = 0.5m; // Exhaustion: Aggressor-Vol am Extrem <= Faktor * Ø (niedriger = strenger)
+        private int _revDeltaWeight = 0;      // Kerzen-Delta in Umkehrrichtung (Default aus)
+        private bool _revPowerFilter = false; // Power-Kerze in Trendrichtung -> Umkehr sperren (Default aus)
+        private decimal _revPowerFactor = 1.5m; // Power-Kerze: Range >= Faktor * Ø-Range im Fenster
 
         // Reversal-Diagnose: Treiber-Aufschluesselung der letzten ANGEZEIGTEN Raute.
         private bool _showRevDebug = false;
-        private struct RevDbg { public decimal Eff; public bool Strong, Div, Abs, Vp, Exh, Spd, Imb, Auc; }
+        private struct RevDbg { public decimal Eff; public bool Strong, Div, Abs, Vp, Exh, Spd, Imb, Auc, Dlt, Pwr; }
         private RevDbg _revCand; private int _revCandDir, _revCandPct;
         private readonly Dictionary<int, RevDbg> _revDbgByBar = new();   // Treiber je Raute (fuer Hover-Diagnose)
         private int _hoverRevBar = -1;                                   // Raute unter dem Mauszeiger
@@ -584,6 +587,25 @@ namespace OrderflowSignal
         [Range(0.1, 1.0)]
         [NumericEditor(NumericEditorTypes.TrackBar, 0.1, 1.0, Step = 0.05, DisplayFormat = "0.00")]
         public decimal RevExhFactor { get => _revExhFactor; set { _revExhFactor = Math.Clamp(value, 0.1m, 1.0m); RecalculateValues(); } }
+
+        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Display(Name = "Gewicht Kerzen-Delta", GroupName = "Treiber-Gewichte", Order = 322,
+            Description = "Netto-Delta der Umkehr-Kerze in Umkehrrichtung + signifikant (>= Delta-Perzentil-Schwelle): am Tief Delta > 0 (Kaeufer uebernehmen), am Hoch Delta < 0 (Verkaeufer). 0 = aus (Default).")]
+        [Range(0, 100)]
+        public int RevDeltaWeight { get => _revDeltaWeight; set { _revDeltaWeight = value; RecalculateValues(); } }
+
+        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Display(Name = "Power-Kerze sperrt Gegentrend-Umkehr", GroupName = "Impuls-Filter", Order = 335,
+            Description = "An = eine Power-Kerze in TRENDrichtung am Extrem (grosse Range + hohes Volumen + starkes einseitiges Delta = Fortsetzungs-Momentum) unterdrueckt die Gegentrend-Umkehr. Renko-tauglich (per-Kerze). Default AUS.")]
+        public bool RevPowerFilter { get => _revPowerFilter; set { _revPowerFilter = value; RecalculateValues(); } }
+
+        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Display(Name = "Power-Kerze: Range-Faktor (x Ø)", GroupName = "Impuls-Filter", Order = 336,
+            Description = "Eine Kerze gilt als Power-Kerze, wenn ihre Range >= Faktor * Ø-Range im Reversal-Fenster ist (zusaetzlich hohes Volumen + starkes Delta). Hoeher = strenger. Standard: 1.5.")]
+        [Range(1.0, 5.0)]
+        [NumericEditor(NumericEditorTypes.TrackBar, 1.0, 5.0, Step = 0.1, DisplayFormat = "0.0")]
+        [VisibleWhen(nameof(RevPowerFilter), true)]
+        public decimal RevPowerFactor { get => _revPowerFactor; set { _revPowerFactor = Math.Max(1m, value); RecalculateValues(); } }
 
         [Tab(TabName = "Reversal", TabOrder = 3)]
         [Display(Name = "Impuls-Filter (kein Gegentrend-Picken)", GroupName = "Impuls-Filter", Order = 330,
@@ -2237,13 +2259,13 @@ namespace OrderflowSignal
             int start = bar - _reversalLookback;
             if (start < 0)
                 return 0;
-            if (!Thresholds(bar, out _, out _, out decimal absThr))
+            if (!Thresholds(bar, out decimal volThr, out decimal deltaThr, out decimal absThr))
                 return 0;
 
-            // Referenz-Extrema + CVD am Extrem + Ø Tape-Speed im Fenster.
+            // Referenz-Extrema + CVD am Extrem + Ø Tape-Speed + Ø Range im Fenster.
             decimal minLow = decimal.MaxValue, maxHigh = decimal.MinValue;
             decimal cdAtLow = 0, cdAtHigh = 0;
-            decimal sumSpeed = 0, sumAbsDelta = 0;
+            decimal sumSpeed = 0, sumAbsDelta = 0, sumRange = 0;
             int speedN = 0;
             decimal firstClose = 0, prevClose = 0, path = 0;
             bool havePrev = false;
@@ -2257,6 +2279,7 @@ namespace OrderflowSignal
                 if (ci.High > maxHigh) { maxHigh = ci.High; cdAtHigh = cd; }
                 sumSpeed += BarSpeed(ci);
                 sumAbsDelta += Math.Abs(ci.Delta);
+                sumRange += ci.High - ci.Low;
                 speedN++;
                 if (!havePrev) { firstClose = ci.Close; prevClose = ci.Close; havePrev = true; }
                 else { path += Math.Abs(ci.Close - prevClose); prevClose = ci.Close; }
@@ -2265,9 +2288,15 @@ namespace OrderflowSignal
             decimal avgAbsDelta = speedN > 0 ? sumAbsDelta / speedN : 0m;
 
             int totalW = _revDivWeight + _revAbsWeight + _revVpocWeight + _revExhWeight + _revSpeedWeight
-                       + _revImbWeight + _revAuctionWeight;
+                       + _revImbWeight + _revAuctionWeight + _revDeltaWeight;
             if (totalW <= 0)
                 totalW = 1;
+
+            // Ø-Range im Fenster (fuer Power-Kerze). Power-Kerze = grosse Range + hohes
+            // Volumen + stark einseitiges Delta.
+            decimal avgRange = speedN > 0 ? sumRange / speedN : 0m;
+            bool bigBar = avgRange > 0 && (c.High - c.Low) >= _revPowerFactor * avgRange
+                          && c.Volume >= volThr;
 
             // Speed-Spike: Tape am Extrem deutlich schneller als der Schnitt = Klimax.
             decimal avgSpeed = speedN > 0 ? sumSpeed / speedN : 0m;
@@ -2297,13 +2326,21 @@ namespace OrderflowSignal
                 decimal need = strongDown ? _revDivMinFactor * avgAbsDelta : 0m;
                 bool divg = divGap > 0 && divGap >= need;
 
-                if (divg || (absr && !strongDown))
+                // (DLT) Kerzen-Delta in Umkehrrichtung (hier: Kaeufer -> Delta > 0, signifikant).
+                bool dlt = c.Delta > 0 && c.Delta >= deltaThr;
+                // (PWR) Power-Kerze in TRENDrichtung (hier: Verkaeufer-Power ins Tief) = Fortsetzung -> Contra.
+                bool powerAgainst = bigBar && c.Delta < 0 && -c.Delta >= deltaThr;
+
+                // Power-Kerze gegen die Umkehr unterdrueckt (nur wenn Filter an).
+                bool blocked = _revPowerFilter && powerAgainst;
+                if (!blocked && (divg || (absr && !strongDown)))
                 {
                     bool vpoc = VpocWickDir(c) > 0;                       // POC im unteren Docht
                     bool exh = ExhaustionAtExtreme(c, true);              // duennes Verkaufsvol am Tief
-                    // A/B bei aktiver Diagnose IMMER auswerten (Anzeige), aber nur bei Gewicht > 0 werten.
+                    // A/B + Power bei aktiver Diagnose IMMER auswerten (Anzeige), aber nur bei Gewicht/Filter werten.
                     bool imb = (_showRevDebug || _revImbWeight > 0) && HasImbStack(c, 1);
                     bool auc = (_showRevDebug || _revAuctionWeight > 0) && AuctionFinishedAtExtreme(c, true);
+
                     int s = 0;
                     if (divg) s += _revDivWeight;
                     if (absr) s += _revAbsWeight;
@@ -2312,10 +2349,11 @@ namespace OrderflowSignal
                     if (speedSpike) s += _revSpeedWeight;                 // Klimax-Tape am Tief
                     if (imb) s += _revImbWeight;
                     if (auc) s += _revAuctionWeight;
+                    if (dlt) s += _revDeltaWeight;
                     int pct = (int)Math.Round(100.0 * s / totalW);
                     if (pct >= _reversalThreshold)
                     {
-                        SetRevCand(1, pct, eff, strongDown, divg, absr, vpoc, exh, speedSpike, imb, auc);
+                        SetRevCand(1, pct, eff, strongDown, divg, absr, vpoc, exh, speedSpike, imb, auc, dlt, powerAgainst);
                         return pct;
                     }
                 }
@@ -2334,11 +2372,17 @@ namespace OrderflowSignal
                 decimal need = strongUp ? _revDivMinFactor * avgAbsDelta : 0m;
                 bool divg = divGap > 0 && divGap >= need;
 
-                if (divg || (absr && !strongUp))
+                // (DLT) Kerzen-Delta in Umkehrrichtung (hier: Verkaeufer -> Delta < 0, signifikant).
+                bool dlt = c.Delta < 0 && -c.Delta >= deltaThr;
+                // (PWR) Power-Kerze in TRENDrichtung (hier: Kaeufer-Power ins Hoch) = Fortsetzung -> Contra.
+                bool powerAgainst = bigBar && c.Delta > 0 && c.Delta >= deltaThr;
+                bool blocked = _revPowerFilter && powerAgainst;
+
+                if (!blocked && (divg || (absr && !strongUp)))
                 {
                     bool vpoc = VpocWickDir(c) < 0;
                     bool exh = ExhaustionAtExtreme(c, false);
-                    // A/B bei aktiver Diagnose IMMER auswerten (Anzeige), aber nur bei Gewicht > 0 werten.
+                    // A/B + Power bei aktiver Diagnose IMMER auswerten (Anzeige), aber nur bei Gewicht/Filter werten.
                     bool imb = (_showRevDebug || _revImbWeight > 0) && HasImbStack(c, -1);
                     bool auc = (_showRevDebug || _revAuctionWeight > 0) && AuctionFinishedAtExtreme(c, false);
                     int s = 0;
@@ -2349,10 +2393,11 @@ namespace OrderflowSignal
                     if (speedSpike) s += _revSpeedWeight;                 // Klimax-Tape am Hoch
                     if (imb) s += _revImbWeight;
                     if (auc) s += _revAuctionWeight;
+                    if (dlt) s += _revDeltaWeight;
                     int pct = (int)Math.Round(100.0 * s / totalW);
                     if (pct >= _reversalThreshold)
                     {
-                        SetRevCand(-1, pct, eff, strongUp, divg, absr, vpoc, exh, speedSpike, imb, auc);
+                        SetRevCand(-1, pct, eff, strongUp, divg, absr, vpoc, exh, speedSpike, imb, auc, dlt, powerAgainst);
                         return -pct;
                     }
                 }
@@ -2363,10 +2408,10 @@ namespace OrderflowSignal
 
         // Diagnose: Treiber-Aufschluesselung des aktuellen Reversal-Kandidaten merken.
         private void SetRevCand(int dir, int pct, decimal eff, bool strong,
-            bool div, bool abs, bool vpoc, bool exh, bool spd, bool imb, bool auc)
+            bool div, bool abs, bool vpoc, bool exh, bool spd, bool imb, bool auc, bool dlt, bool pwr)
         {
             _revCandDir = dir; _revCandPct = pct;
-            _revCand = new RevDbg { Eff = eff, Strong = strong, Div = div, Abs = abs, Vp = vpoc, Exh = exh, Spd = spd, Imb = imb, Auc = auc };
+            _revCand = new RevDbg { Eff = eff, Strong = strong, Div = div, Abs = abs, Vp = vpoc, Exh = exh, Spd = spd, Imb = imb, Auc = auc, Dlt = dlt, Pwr = pwr };
         }
 
         // Tape-Speed der Kerze: Trades pro Sekunde (Ticks / Dauer). Historisch
@@ -2837,12 +2882,14 @@ namespace OrderflowSignal
             ("SPD", Color.FromArgb(255, 255,  90,  90)),  // rot       = Speed
             ("IMB", Color.FromArgb(255,  90, 220, 130)),  // gruen     = Imbalance-Flip
             ("AUC", Color.FromArgb(255, 235, 235, 235)),  // weiss     = Finished Auction
+            ("DLT", Color.FromArgb(255,  90, 235, 235)),  // cyan      = Kerzen-Delta (Umkehrrichtung)
+            ("PWR", Color.FromArgb(255, 255,  70, 160)),  // magenta   = Power-Kerze GEGEN (Contra)
         };
 
         // Farbiger Diagnose-Tooltip an der gehoverten Raute.
         private void DrawRevHover(RenderContext context, int x, int y, int dir, int r, RevDbg d)
         {
-            bool[] on = { d.Div, d.Abs, d.Vp, d.Exh, d.Spd, d.Imb, d.Auc };
+            bool[] on = { d.Div, d.Abs, d.Vp, d.Exh, d.Spd, d.Imb, d.Auc, d.Dlt, d.Pwr };
             string head = $"eff{d.Eff:0.00}{(d.Strong ? "  IMP" : "")}";
             var hsz = context.MeasureString(head, _font);
             const int gap = 7, pad = 7;
