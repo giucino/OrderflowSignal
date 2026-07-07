@@ -121,17 +121,17 @@ namespace OrderflowSignal
         // Exhaustion), nur an lokalen Extrema. Eigener Score + Rauten-Marker.
         private bool _reversalEnabled = true;
         private int _reversalLookback = 14;   // Bars fuer Extrem-/Divergenz-Referenz
-        private int _reversalThreshold = 70;  // Mindest-Reversal-Score (%) -> ~3 Bedingungen
+        private int _reversalThreshold = 60;  // Mindest-Reversal-Score (%); an groesseren Nenner (DLT/AUC) angepasst
         private int _revDivWeight = 30;       // Delta-Divergenz
         private int _revAbsWeight = 30;       // Absorption am Extrem
         private int _revVpocWeight = 20;      // vPOC im Docht
         private int _revExhWeight = 15;       // Exhaustion (duennes Aggressor-Vol)
         private int _revSpeedWeight = 5;      // Speed of Tape: Klimax-Spike am Extrem (runter: inkonsistent)
         private int _revImbWeight = 0;        // (A) frischer Imbalance-Flip am Extrem (aus: saturiert auf Renko)
-        private int _revAuctionWeight = 15;   // (B) Finished Auction am Extrem (selektiver Treiber)
+        private int _revAuctionWeight = 10;   // (B) Finished Auction am Extrem (selektiver Treiber)
         private decimal _revExhFactor = 0.35m;// Exhaustion: Aggressor-Vol am Extrem <= Faktor * Ø (strenger)
-        private int _revDeltaWeight = 25;     // Kerzen-Delta in Umkehrrichtung (Diskriminator)
-        private bool _revPowerFilter = true;  // Power-Kerze in Trendrichtung -> Umkehr sperren (Contra-Veto)
+        private int _revDeltaWeight = 20;     // Kerzen-Delta in Umkehrrichtung (Diskriminator)
+        private bool _revPowerFilter = false; // Power-Kerze-Veto: Opt-in (kann Klimax-Umkehren faelschlich sperren)
         private decimal _revPowerFactor = 1.5m; // Power-Kerze: Range >= Faktor * Ø-Range im Fenster
 
         // Reversal-Diagnose: Treiber-Aufschluesselung der letzten ANGEZEIGTEN Raute.
@@ -570,7 +570,7 @@ namespace OrderflowSignal
 
         [Tab(TabName = "Reversal", TabOrder = 3)]
         [Display(Name = "Gewicht Finished Auction", GroupName = "Treiber-Gewichte", Order = 319,
-            Description = "(B) Auktion am Extrem ist abgeschlossen (kein Imbalance-Tip = Gegenseite hat gestoppt = Erschoepfung). Unfinished (Tip noch imbalanced) zaehlt nicht. Default 15.")]
+            Description = "(B) Auktion am Extrem ist abgeschlossen (kein Imbalance-Tip = Gegenseite hat gestoppt = Erschoepfung). Unfinished (Tip noch imbalanced) zaehlt nicht. Default 10.")]
         [Range(0, 100)]
         public int RevAuctionWeight { get => _revAuctionWeight; set { _revAuctionWeight = value; RecalculateValues(); } }
 
@@ -590,13 +590,13 @@ namespace OrderflowSignal
 
         [Tab(TabName = "Reversal", TabOrder = 3)]
         [Display(Name = "Gewicht Kerzen-Delta", GroupName = "Treiber-Gewichte", Order = 322,
-            Description = "Netto-Delta der Umkehr-Kerze in Umkehrrichtung + signifikant (>= Delta-Perzentil-Schwelle): am Tief Delta > 0 (Kaeufer uebernehmen), am Hoch Delta < 0 (Verkaeufer). Default 25 (Diskriminator).")]
+            Description = "Netto-Delta der Umkehr-Kerze in Umkehrrichtung + signifikant (>= Delta-Perzentil-Schwelle): am Tief Delta > 0 (Kaeufer uebernehmen), am Hoch Delta < 0 (Verkaeufer). Default 20 (Diskriminator).")]
         [Range(0, 100)]
         public int RevDeltaWeight { get => _revDeltaWeight; set { _revDeltaWeight = value; RecalculateValues(); } }
 
         [Tab(TabName = "Reversal", TabOrder = 3)]
         [Display(Name = "Power-Kerze sperrt Gegentrend-Umkehr", GroupName = "Impuls-Filter", Order = 335,
-            Description = "An = eine Power-Kerze in TRENDrichtung am Extrem (grosse Range + hohes Volumen + starkes einseitiges Delta = Fortsetzungs-Momentum) unterdrueckt die Gegentrend-Umkehr. Renko-tauglich (per-Kerze). Default AN.")]
+            Description = "An = eine Power-Kerze in TRENDrichtung am Extrem (grosse Range + hohes Volumen + starkes einseitiges Delta = Fortsetzungs-Momentum) unterdrueckt die Gegentrend-Umkehr. Renko-tauglich. VORSICHT: kann echte Klimax-Umkehren sperren -> Opt-in. Default AUS.")]
         public bool RevPowerFilter { get => _revPowerFilter; set { _revPowerFilter = value; RecalculateValues(); } }
 
         [Tab(TabName = "Reversal", TabOrder = 3)]
