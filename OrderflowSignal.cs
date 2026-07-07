@@ -133,9 +133,10 @@ namespace OrderflowSignal
 
         // Reversal-Diagnose: Treiber-Aufschluesselung der letzten ANGEZEIGTEN Raute.
         private bool _showRevDebug = false;
-        private int _revCandDir, _revCandPct; private decimal _revCandEff; private bool _revCandStrong; private string _revCandTags = "";
-        private int _revDbgBar = -1, _revDbgDir, _revDbgPct; private decimal _revDbgEff; private bool _revDbgStrong; private string _revDbgTags = "";
-        private readonly Dictionary<int, string> _revDbgByBar = new();   // Treiber-Tag je Raute (Diagnose)
+        private struct RevDbg { public decimal Eff; public bool Strong, Div, Abs, Vp, Exh, Spd, Imb, Auc; }
+        private RevDbg _revCand; private int _revCandDir, _revCandPct;
+        private readonly Dictionary<int, RevDbg> _revDbgByBar = new();   // Treiber je Raute (fuer Hover-Diagnose)
+        private int _hoverRevBar = -1;                                   // Raute unter dem Mauszeiger
         private decimal _revSpeedFactor = 1.5m; // Spike, wenn Bar-Speed >= Faktor * Ø-Speed
         // Impuls-Filter: in einem gesunden, gerichteten Impuls braucht ein Gegentrend-
         // Reversal echte CVD-Divergenz (Absorption allein reicht nicht). Default AUS.
@@ -511,8 +512,8 @@ namespace OrderflowSignal
         public bool ShowReversalMarkers { get => _showReversalMarkers; set { _showReversalMarkers = value; RedrawChart(); } }
 
         [Tab(TabName = "Reversal", TabOrder = 3)]
-        [Display(Name = "Reversal-Diagnose im HUD", GroupName = "Reversal", Order = 306,
-            Description = "Zeigt fuer die letzte angezeigte Raute die Treiber (GROSS = gefeuert): DIV/ABS/VP/EXH/SPD/IMB/AUC, plus Score, Effizienz (eff) und ob der Impuls-Filter das Bein als starken Impuls (IMP) einstufte. Zum Diagnostizieren, warum eine Raute kam.")]
+        [Display(Name = "Reversal-Diagnose (Hover)", GroupName = "Reversal", Order = 306,
+            Description = "An = beim Hovern ueber eine Raute erscheint ein farbcodierter Tooltip mit den Treibern (hell = gefeuert): DIV/ABS/VP/EXH/SPD/IMB/AUC, plus Effizienz (eff) und Impuls-Flag (IMP). Zum Diagnostizieren, warum eine Raute kam.")]
         public bool ShowRevDebug { get => _showRevDebug; set { _showRevDebug = value; RedrawChart(); } }
 
         [Tab(TabName = "Reversal", TabOrder = 3)]
@@ -1063,7 +1064,7 @@ namespace OrderflowSignal
 
             string key = $"{_hudBull}|{_hudBear}|{_hudSignal}|{_hudRev}|{_hudTags}|{_hudWarn}|{_chartLabel}|" +
                          $"{_liveVolThr}|{_liveDeltaThr}|{_liveAbsThr}|{_freezeCalibration}|" +
-                         $"{_rangeVah}|{_rangeVal}|{_rangeVpoc}|{CurrentBar}|{_revDbgBar}|{_revDbgTags}";
+                         $"{_rangeVah}|{_rangeVal}|{_rangeVpoc}|{CurrentBar}";
             if (key != _lastRenderKey)
             {
                 _lastRenderKey = key;
@@ -1542,7 +1543,7 @@ namespace OrderflowSignal
             _revSignals.Clear();
             _lastSignalBar = -1;
             _lastRevBar = -1;
-            _revDbgBar = -1;
+            _hoverRevBar = -1;
             _revDbgByBar.Clear();
             _histDone = false;   // erst nach erneutem Historien-Nachladen wieder alarmieren
             // _bigReqDone NICHT zuruecksetzen: Levels ueberleben einen reinen Recalc.
@@ -1606,10 +1607,8 @@ namespace OrderflowSignal
             if (rev != 0)
             {
                 _lastRevBar = bar;
-                // Diagnose der tatsaechlich ANGEZEIGTEN Raute festhalten.
-                _revDbgBar = bar; _revDbgDir = _revCandDir; _revDbgPct = _revCandPct;
-                _revDbgEff = _revCandEff; _revDbgStrong = _revCandStrong; _revDbgTags = _revCandTags;
-                _revDbgByBar[bar] = $"e{_revCandEff:0.0}{(_revCandStrong ? " IMP" : "")} {_revCandTags}";
+                // Treiber-Aufschluesselung der ANGEZEIGTEN Raute fuer die Hover-Diagnose.
+                _revDbgByBar[bar] = _revCand;
             }
 
             // Alarm (Telegram via ATAS) — NUR live (nach Historien-Nachladen), nicht rueckwirkend.
@@ -2366,9 +2365,8 @@ namespace OrderflowSignal
         private void SetRevCand(int dir, int pct, decimal eff, bool strong,
             bool div, bool abs, bool vpoc, bool exh, bool spd, bool imb, bool auc)
         {
-            _revCandDir = dir; _revCandPct = pct; _revCandEff = eff; _revCandStrong = strong;
-            string T(bool on, string u) => on ? u : u.ToLowerInvariant();
-            _revCandTags = $"{T(div, "DIV")} {T(abs, "ABS")} {T(vpoc, "VP")} {T(exh, "EXH")} {T(spd, "SPD")} {T(imb, "IMB")} {T(auc, "AUC")}";
+            _revCandDir = dir; _revCandPct = pct;
+            _revCand = new RevDbg { Eff = eff, Strong = strong, Div = div, Abs = abs, Vp = vpoc, Exh = exh, Spd = spd, Imb = imb, Auc = auc };
         }
 
         // Tape-Speed der Kerze: Trades pro Sekunde (Ticks / Dauer). Historisch
@@ -2823,14 +2821,98 @@ namespace OrderflowSignal
                 int numY = dir > 0 ? y + r + 1 : y - r - nsz.Height - 1;
                 context.DrawString(num, _font, col, x - nsz.Width / 2, numY);
 
-                // Diagnose-Tag je Raute (Treiber, eff, IMP).
-                if (_showRevDebug && _revDbgByBar.TryGetValue(b, out var dbg))
-                {
-                    var dsz = context.MeasureString(dbg, _font);
-                    int dbgY = dir > 0 ? numY + nsz.Height + 1 : numY - dsz.Height - 1;
-                    context.DrawString(dbg, _font, _colorDim, x - dsz.Width / 2, dbgY);
-                }
+                // Diagnose-Tooltip nur an der Raute unter dem Mauszeiger (farbcodiert).
+                if (_showRevDebug && b == _hoverRevBar && _revDbgByBar.TryGetValue(b, out var dd))
+                    DrawRevHover(context, x, y, dir, r, dd);
             }
+        }
+
+        // Feste Treiber-Farben fuer die Diagnose.
+        private static readonly (string Name, Color Col)[] RevDriverColors =
+        {
+            ("DIV", Color.FromArgb(255,  90, 180, 255)),  // hellblau  = Divergenz
+            ("ABS", Color.FromArgb(255, 255, 150,  60)),  // orange    = Absorption
+            ("VP",  Color.FromArgb(255, 200, 120, 255)),  // violett   = vPOC-Docht
+            ("EXH", Color.FromArgb(255, 240, 220,  90)),  // gelb      = Exhaustion
+            ("SPD", Color.FromArgb(255, 255,  90,  90)),  // rot       = Speed
+            ("IMB", Color.FromArgb(255,  90, 220, 130)),  // gruen     = Imbalance-Flip
+            ("AUC", Color.FromArgb(255, 235, 235, 235)),  // weiss     = Finished Auction
+        };
+
+        // Farbiger Diagnose-Tooltip an der gehoverten Raute.
+        private void DrawRevHover(RenderContext context, int x, int y, int dir, int r, RevDbg d)
+        {
+            bool[] on = { d.Div, d.Abs, d.Vp, d.Exh, d.Spd, d.Imb, d.Auc };
+            string head = $"eff{d.Eff:0.00}{(d.Strong ? "  IMP" : "")}";
+            var hsz = context.MeasureString(head, _font);
+            const int gap = 7, pad = 7;
+
+            int lineW = 0;
+            for (int i = 0; i < RevDriverColors.Length; i++)
+                lineW += context.MeasureString(RevDriverColors[i].Name, _font).Width + gap;
+
+            int boxW = Math.Max(hsz.Width, lineW) + pad * 2;
+            int lineH = hsz.Height;
+            int boxH = lineH * 2 + pad * 2 + 2;
+            int bx = x - boxW / 2;
+            int by = dir > 0 ? y + r + 6 : y - r - boxH - 6;
+
+            var box = new Rectangle(bx, by, boxW, boxH);
+            context.FillRectangle(Color.FromArgb(235, 18, 22, 30), box);
+            context.DrawRectangle(new RenderPen(Color.FromArgb(255, 100, 100, 125), 1), box);
+
+            context.DrawString(head, _font, _colorText, bx + pad, by + pad);
+
+            int tx = bx + pad;
+            int ty = by + pad + lineH + 2;
+            for (int i = 0; i < RevDriverColors.Length; i++)
+            {
+                var c = RevDriverColors[i].Col;
+                var col = on[i] ? c : Color.FromArgb(70, c.R, c.G, c.B);   // gefeuert = hell, sonst gedimmt
+                context.DrawString(RevDriverColors[i].Name, _font, col, tx, ty);
+                tx += context.MeasureString(RevDriverColors[i].Name, _font).Width + gap;
+            }
+        }
+
+        // Maus-Hover: Raute unter dem Cursor bestimmen -> Tooltip einblenden.
+        public override bool ProcessMouseMove(RenderControlMouseEventArgs e)
+        {
+            if (_showRevDebug && _reversalEnabled && e != null)
+            {
+                int hb = FindHoveredRevBar(e.X, e.Y);
+                if (hb != _hoverRevBar) { _hoverRevBar = hb; RedrawChart(); }
+            }
+            return base.ProcessMouseMove(e);
+        }
+
+        private int FindHoveredRevBar(int mx, int my)
+        {
+            if (ChartInfo?.PriceChartContainer is not { } cont)
+                return -1;
+            decimal tick = InstrumentInfo?.TickSize ?? 0m;
+            decimal offset = tick * (_markerTickOffset * 2 + 6);
+            int lastBar = CurrentBar - 1;
+            int from = Math.Max(0, FirstVisibleBarNumber);
+            int to = Math.Min(lastBar, LastVisibleBarNumber);
+            int best = -1, bestD = 22 * 22;   // Trefferradius in px
+            for (int b = from; b <= to; b++)
+            {
+                if (GetRevSignal(b) == 0 || !_revDbgByBar.ContainsKey(b))
+                    continue;
+                var c = GetCandle(b);
+                if (c == null)
+                    continue;
+                int dir = Math.Sign(GetRevSignal(b));
+                if (_revEdgeOnly && !IsAtRangeEdge(b, dir))
+                    continue;
+                decimal price = dir > 0 ? c.Low - offset : c.High + offset;
+                int x, yy;
+                try { x = cont.GetXByBar(b, false); yy = cont.GetYByPrice(price, false); }
+                catch { continue; }
+                int dx = x - mx, dy = yy - my, dd = dx * dx + dy * dy;
+                if (dd < bestD) { bestD = dd; best = b; }
+            }
+            return best;
         }
 
         private void DrawHud(RenderContext context)
@@ -2859,14 +2941,6 @@ namespace OrderflowSignal
                 string rt = rev > 0 ? "LONG" : rev < 0 ? "SHORT" : "—";
                 var rc = rev > 0 ? _colorRevBull : rev < 0 ? _colorRevBear : _colorNeutral;
                 lines.Add(($"REV: {rt} {Math.Abs(rev)}", rc, _font));
-            }
-
-            if (_showRevDebug && _revDbgBar >= 0)
-            {
-                string d = _revDbgDir > 0 ? "L" : "S";
-                string imp = _revDbgStrong ? " IMP" : "";
-                lines.Add(($"dbg {d}{_revDbgPct}% eff{_revDbgEff:0.00}{imp}", _colorDim, _font));
-                lines.Add(($"{_revDbgTags}", _colorDim, _font));
             }
 
             if (_showCalibration)
