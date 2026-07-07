@@ -133,6 +133,14 @@ namespace OrderflowSignal
         private int _revDeltaWeight = 20;     // Kerzen-Delta in Umkehrrichtung (Diskriminator)
         private bool _revPowerFilter = false; // Power-Kerze-Veto: Opt-in (kann Klimax-Umkehren faelschlich sperren)
         private decimal _revPowerFactor = 1.5m; // Power-Kerze: Range >= Faktor * Ø-Range im Fenster
+        private bool _revReclaim = false;     // Reclaim-Bestaetigung statt 2-Kerzen
+        private int _revReclaimBars = 6;      // max. Bars fuer den Reclaim
+        private bool _revTrendFilter = false; // Trend-Gate: Gegentrend nur mit Reclaim
+        private int _revTrendWindow = 40;     // Fenster fuer die Trend-Messung (Bars)
+        private decimal _revTrendMinUnits = 4.0m; // Trend gilt als stark ab Netto-Weg >= Faktor * Ø-Range
+        // Aufgeschobene Umkehr-Kandidaten (warten auf Reclaim).
+        private struct RevPend { public int Bar, Dir, Pct, Deadline; public decimal High, Low; public RevDbg Dbg; }
+        private readonly List<RevPend> _revPending = new();
 
         // Reversal-Diagnose: Treiber-Aufschluesselung der letzten ANGEZEIGTEN Raute.
         private bool _showRevDebug = false;
@@ -632,6 +640,38 @@ namespace OrderflowSignal
         [Display(Name = "Folgekerzen-Bestätigung (2-Kerzen)", GroupName = "Bestaetigung & Kanten", Order = 340,
             Description = "Umkehr nur, wenn die naechste Kerze in Umkehr-Richtung schliesst. Hoehere Qualitaet, 1 Bar Verzoegerung.")]
         public bool RevConfirm { get => _revConfirm; set { _revConfirm = value; RecalculateValues(); } }
+
+        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Display(Name = "Reclaim-Bestaetigung (statt 2-Kerzen)", GroupName = "Bestaetigung & Kanten", Order = 345,
+            Description = "An = Umkehr wird erst gezeigt, wenn der Preis das Extrem der Umkehr-Kerze ZURUECKEROBERT (Long: Close > Kerzen-Hoch; Short: Close < Kerzen-Tief) innerhalb der max. Bars. Kein Einstieg ins fallende Messer, dafuer spaeter. Default aus.")]
+        public bool RevReclaim { get => _revReclaim; set { _revReclaim = value; RecalculateValues(); } }
+
+        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Display(Name = "Reclaim: max. Bars", GroupName = "Bestaetigung & Kanten", Order = 346,
+            Description = "So viele Bars darf der Reclaim maximal dauern; danach wird der Kandidat verworfen. Standard: 6.")]
+        [Range(1, 50)]
+        [NumericEditor(NumericEditorTypes.TrackBar, 1, 50, Step = 1)]
+        public int RevReclaimBars { get => _revReclaimBars; set { _revReclaimBars = Math.Clamp(value, 1, 50); RecalculateValues(); } }
+
+        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Display(Name = "Trend-Gate (Gegentrend nur mit Reclaim)", GroupName = "Trend-Gate", Order = 370,
+            Description = "An = in einem starken Trend (ueber das Trend-Fenster) braucht eine GEGENTREND-Umkehr zwingend einen Reclaim, bevor sie erscheint. Verhindert fruehe Boden/Top-Picks im laufenden Trend (fallendes Messer). Chart-agnostisch. Default aus.")]
+        public bool RevTrendFilter { get => _revTrendFilter; set { _revTrendFilter = value; RecalculateValues(); } }
+
+        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Display(Name = "Trend-Fenster (Bars)", GroupName = "Trend-Gate", Order = 372,
+            Description = "Fenster fuer die Trend-Messung (Netto-Weg / Ø-Range). Laenger = traegerer, groesserer Trend. Standard: 40.")]
+        [Range(10, 500)]
+        [VisibleWhen(nameof(RevTrendFilter), true)]
+        public int RevTrendWindow { get => _revTrendWindow; set { _revTrendWindow = Math.Max(10, value); RecalculateValues(); } }
+
+        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Display(Name = "Trend-Staerke (x Ø-Range)", GroupName = "Trend-Gate", Order = 374,
+            Description = "Trend gilt als stark, wenn der Netto-Weg im Fenster >= Faktor * Ø-Bar-Range ist. Hoeher = nur sehr klare Trends gaten. Standard: 4.0.")]
+        [Range(1.0, 20.0)]
+        [NumericEditor(NumericEditorTypes.TrackBar, 1.0, 20.0, Step = 0.5, DisplayFormat = "0.0")]
+        [VisibleWhen(nameof(RevTrendFilter), true)]
+        public decimal RevTrendMinUnits { get => _revTrendMinUnits; set { _revTrendMinUnits = Math.Max(1m, value); RecalculateValues(); } }
 
         [Tab(TabName = "Reversal", TabOrder = 3)]
         [Display(Name = "Nur an Range-Kanten (Phase 2b)", GroupName = "Bestaetigung & Kanten", Order = 342,
@@ -1567,6 +1607,7 @@ namespace OrderflowSignal
             _lastRevBar = -1;
             _hoverRevBar = -1;
             _revDbgByBar.Clear();
+            _revPending.Clear();
             _histDone = false;   // erst nach erneutem Historien-Nachladen wieder alarmieren
             // _bigReqDone NICHT zuruecksetzen: Levels ueberleben einen reinen Recalc.
             // Neu-Anfrage nur bei frischer Instanz (_bigReqDone==false) oder _bigDirty.
@@ -1619,26 +1660,103 @@ namespace OrderflowSignal
             if (sig != 0)
                 _lastSignalBar = bar;
 
+            // Erst faellige Reclaim-Kandidaten gegen DIESEN Bar pruefen (koennen aeltere
+            // Rauten rueckwirkend bestaetigen, sobald der Preis das Extrem zurueckerobert).
+            CheckRevPending(bar, c);
+
             int rev = RevEvaluate(bar, c, signedMld, _cumDeltaRun);
-            if (rev != 0 && _revConfirm && !RevConfirmed(bar, Math.Sign(rev)))
-                rev = 0;   // 2-Kerzen-Bestaetigung fehlt
-            if (rev != 0 && _lastRevBar >= 0 && _signalCooldownBars > 0
-                && (bar - _lastRevBar) <= _signalCooldownBars)
-                rev = 0;
+            if (rev != 0)
+            {
+                int dir = Math.Sign(rev);
+                // Cooldown zuerst.
+                if (_lastRevBar >= 0 && _signalCooldownBars > 0 && (bar - _lastRevBar) <= _signalCooldownBars)
+                {
+                    rev = 0;
+                }
+                else
+                {
+                    // Trend-Gate: Gegentrend-Umkehr in einem starken Trend -> Reclaim Pflicht.
+                    int td = _revTrendFilter ? TrendDir(bar) : 0;
+                    bool counterTrend = td != 0 && td == -dir;
+                    bool needReclaim = _revReclaim || counterTrend;
+
+                    if (needReclaim)
+                    {
+                        // Aufschieben: erst zeigen, wenn der Preis das Extrem der Umkehr-Kerze
+                        // zurueckerobert (kein Einstieg ins fallende Messer).
+                        _revPending.Add(new RevPend
+                        {
+                            Bar = bar, Dir = dir, Pct = Math.Abs(rev),
+                            High = c.High, Low = c.Low, Deadline = bar + _revReclaimBars, Dbg = _revCand
+                        });
+                        rev = 0;
+                    }
+                    else if (_revConfirm && !RevConfirmed(bar, dir))
+                    {
+                        rev = 0;   // 2-Kerzen-Bestaetigung fehlt
+                    }
+                }
+            }
             SetRevSignal(bar, rev);
             if (rev != 0)
             {
                 _lastRevBar = bar;
-                // Treiber-Aufschluesselung der ANGEZEIGTEN Raute fuer die Hover-Diagnose.
                 _revDbgByBar[bar] = _revCand;
+                if (_histDone && _alertOnReversal)
+                    FireReversalAlert(bar, rev, c);
             }
-
-            // Alarm (Telegram via ATAS) — NUR live (nach Historien-Nachladen), nicht rueckwirkend.
-            if (rev != 0 && _histDone && _alertOnReversal)
-                FireReversalAlert(bar, rev, c);
 
             // Imbalance-Zonen: erst offene Zonen gegen diesen Bar pruefen, dann neue erkennen.
             ProcessImbZones(bar, c, detectNew: true);
+        }
+
+        // Reclaim-Kandidaten gegen den aktuellen Bar pruefen. Erobert der Close das Extrem
+        // der Umkehr-Kerze zurueck -> Raute rueckwirkend bestaetigen. Sonst nach Deadline verwerfen.
+        private void CheckRevPending(int bar, IndicatorCandle c)
+        {
+            for (int i = _revPending.Count - 1; i >= 0; i--)
+            {
+                var p = _revPending[i];
+                bool reclaimed = p.Dir > 0 ? c.Close > p.High : c.Close < p.Low;
+                if (reclaimed)
+                {
+                    SetRevSignal(p.Bar, p.Dir * p.Pct);
+                    _revDbgByBar[p.Bar] = p.Dbg;
+                    _lastRevBar = p.Bar;
+                    if (_histDone && _alertOnReversal)
+                        FireReversalAlert(p.Bar, p.Dir * p.Pct, GetCandle(p.Bar));
+                    _revPending.RemoveAt(i);
+                }
+                else if (bar >= p.Deadline)
+                {
+                    _revPending.RemoveAt(i);   // Reclaim ausgeblieben -> verworfen
+                }
+            }
+        }
+
+        // Trend-Richtung ueber ein laengeres Fenster (chart-agnostisch): Netto-Weg / Ø-Range.
+        // 0 = kein starker Trend, +1 = auf, -1 = ab.
+        private int TrendDir(int bar)
+        {
+            int start = bar - _revTrendWindow;
+            if (start < 0)
+                return 0;
+            var c0 = GetCandle(start);
+            var cB = GetCandle(bar);
+            if (c0 == null || cB == null)
+                return 0;
+            decimal disp = cB.Close - c0.Close;
+            decimal sumR = 0; int n = 0;
+            for (int i = start; i <= bar; i++)
+            {
+                var ci = GetCandle(i);
+                if (ci == null) continue;
+                sumR += ci.High - ci.Low; n++;
+            }
+            decimal avgR = n > 0 ? sumR / n : 0m;
+            if (avgR <= 0 || Math.Abs(disp) / avgR < _revTrendMinUnits)
+                return 0;
+            return Math.Sign(disp);
         }
 
         // Loest einen ATAS-Alarm aus (geht automatisch durch die konfigurierte
