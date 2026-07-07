@@ -129,6 +129,7 @@ namespace OrderflowSignal
         private int _revSpeedWeight = 15;     // Speed of Tape: Klimax-Spike am Extrem
         private int _revImbWeight = 0;        // (A) frischer Imbalance-Flip am Extrem (Default aus)
         private int _revAuctionWeight = 0;    // (B) Finished Auction am Extrem (Default aus)
+        private decimal _revExhFactor = 0.5m; // Exhaustion: Aggressor-Vol am Extrem <= Faktor * Ø (niedriger = strenger)
 
         // Reversal-Diagnose: Treiber-Aufschluesselung der letzten ANGEZEIGTEN Raute.
         private bool _showRevDebug = false;
@@ -575,6 +576,13 @@ namespace OrderflowSignal
         [Range(1.0, 10.0)]
         [NumericEditor(NumericEditorTypes.TrackBar, 1.0, 10.0, Step = 0.5, DisplayFormat = "0.0")]
         public decimal RevSpeedFactor { get => _revSpeedFactor; set { _revSpeedFactor = value; RecalculateValues(); } }
+
+        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Display(Name = "Exhaustion-Faktor", GroupName = "Treiber-Gewichte", Order = 321,
+            Description = "Exhaustion feuert, wenn Aggressor-Volumen am Extrem <= Faktor * Ø-Level-Volumen. Niedriger = strenger (nur wirklich duennes Volumen). Standard: 0.5 = wie bisher.")]
+        [Range(0.1, 1.0)]
+        [NumericEditor(NumericEditorTypes.TrackBar, 0.1, 1.0, Step = 0.05, DisplayFormat = "0.00")]
+        public decimal RevExhFactor { get => _revExhFactor; set { _revExhFactor = Math.Clamp(value, 0.1m, 1.0m); RecalculateValues(); } }
 
         [Tab(TabName = "Reversal", TabOrder = 3)]
         [Display(Name = "Impuls-Filter (kein Gegentrend-Picken)", GroupName = "Impuls-Filter", Order = 330,
@@ -2294,8 +2302,9 @@ namespace OrderflowSignal
                 {
                     bool vpoc = VpocWickDir(c) > 0;                       // POC im unteren Docht
                     bool exh = ExhaustionAtExtreme(c, true);              // duennes Verkaufsvol am Tief
-                    bool imb = _revImbWeight > 0 && HasImbStack(c, 1);    // (A) Buy-Imbalance-Flip
-                    bool auc = _revAuctionWeight > 0 && AuctionFinishedAtExtreme(c, true); // (B) Finished Auction am Tief
+                    // A/B bei aktiver Diagnose IMMER auswerten (Anzeige), aber nur bei Gewicht > 0 werten.
+                    bool imb = (_showRevDebug || _revImbWeight > 0) && HasImbStack(c, 1);
+                    bool auc = (_showRevDebug || _revAuctionWeight > 0) && AuctionFinishedAtExtreme(c, true);
                     int s = 0;
                     if (divg) s += _revDivWeight;
                     if (absr) s += _revAbsWeight;
@@ -2330,8 +2339,9 @@ namespace OrderflowSignal
                 {
                     bool vpoc = VpocWickDir(c) < 0;
                     bool exh = ExhaustionAtExtreme(c, false);
-                    bool imb = _revImbWeight > 0 && HasImbStack(c, -1);   // (A) Sell-Imbalance-Flip
-                    bool auc = _revAuctionWeight > 0 && AuctionFinishedAtExtreme(c, false); // (B) Finished Auction am Hoch
+                    // A/B bei aktiver Diagnose IMMER auswerten (Anzeige), aber nur bei Gewicht > 0 werten.
+                    bool imb = (_showRevDebug || _revImbWeight > 0) && HasImbStack(c, -1);
+                    bool auc = (_showRevDebug || _revAuctionWeight > 0) && AuctionFinishedAtExtreme(c, false);
                     int s = 0;
                     if (divg) s += _revDivWeight;
                     if (absr) s += _revAbsWeight;
@@ -2384,7 +2394,7 @@ namespace OrderflowSignal
 
         // Exhaustion: am Extrem-Preislevel ist das Aggressor-Volumen duenn
         // (am Tief = Bid/Verkaufen, am Hoch = Ask/Kaufen) relativ zum Bar-Schnitt.
-        private static bool ExhaustionAtExtreme(IndicatorCandle c, bool atLow)
+        private bool ExhaustionAtExtreme(IndicatorCandle c, bool atLow)
         {
             decimal extPrice = atLow ? decimal.MaxValue : decimal.MinValue;
             decimal aggrAtExt = 0, total = 0;
@@ -2405,7 +2415,7 @@ namespace OrderflowSignal
             if (n == 0)
                 return false;
             decimal avg = total / n;
-            return avg > 0 && aggrAtExt <= 0.5m * avg;
+            return avg > 0 && aggrAtExt <= _revExhFactor * avg;
         }
 
         private static decimal BarPriceForVwap(IndicatorCandle c)
