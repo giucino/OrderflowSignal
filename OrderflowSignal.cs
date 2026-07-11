@@ -129,11 +129,19 @@ namespace OrderflowSignal
         private int _revSpeedWeight = 15;     // Speed of Tape: Klimax-Spike am Extrem
         private int _revImbWeight = 0;        // (A) frischer Imbalance-Flip am Extrem (Default aus)
         private int _revAuctionWeight = 0;    // (B) Finished Auction am Extrem (Default aus)
+        // semaPHorek-Ergaenzungen (alle Default-Gewicht 0 = neutral, aendern nichts):
+        private int _revAcntWeight = 0;         // (C) Absorption Count: mehrere absorbierte Level
+        private int _revAcntMin = 2;            // min. Anzahl absorbierter Level ("X of Y")
+        private decimal _revAcntFrac = 0.5m;    // Level zaehlt ab Frac * staerkstem Level-Delta
+        private int _revPwrWeight = 0;          // (D) Volume Power Bar: Power-Kerze in Umkehr-Richtung
+        private decimal _revPwrVolMult = 1.5m;  // Volumen >= Mult * Ø-Bar-Volumen im Fenster
+        private int _revCdeltaWeight = 0;       // (E) Kerzen-Delta im Reversal (Netto-Delta der Umkehrkerze)
+        private decimal _revCdeltaFactor = 0.5m;// Kerzen-Delta >= Faktor * Ø-|Bar-Delta|
         private decimal _revExhFactor = 0.5m; // Exhaustion: Aggressor-Vol am Extrem <= Faktor * Ø (niedriger = strenger)
 
         // Reversal-Diagnose: Treiber-Aufschluesselung der letzten ANGEZEIGTEN Raute.
         private bool _showRevDebug = false;
-        private struct RevDbg { public decimal Eff; public bool Strong, Div, Abs, Vp, Exh, Spd, Imb, Auc; }
+        private struct RevDbg { public decimal Eff; public bool Strong, Div, Abs, Vp, Exh, Spd, Imb, Auc, Acn, Pwr, Cdl; }
         private RevDbg _revCand; private int _revCandDir, _revCandPct;
         private readonly Dictionary<int, RevDbg> _revDbgByBar = new();   // Treiber je Raute (fuer Hover-Diagnose)
         private int _hoverRevBar = -1;                                   // Raute unter dem Mauszeiger
@@ -576,6 +584,43 @@ namespace OrderflowSignal
             Description = "(B) Auktion am Extrem ist abgeschlossen (kein Imbalance-Tip = Gegenseite hat gestoppt = Erschoepfung). Unfinished (Tip noch imbalanced) zaehlt nicht. 0 = aus (Default).")]
         [Range(0, 100)]
         public int RevAuctionWeight { get => _revAuctionWeight; set { _revAuctionWeight = value; RecalculateValues(); } }
+
+        // ── semaPHorek-Ergaenzungen (Default-Gewicht 0 = neutral) ──────────
+        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Display(Name = "Gewicht Absorption Count", GroupName = "semaPHorek-Ergaenzungen", Order = 330,
+            Description = "(C) Mehrere absorbierte Level am Extrem (nicht nur das staerkste). 0 = aus (Default). Per-Kerze -> saturiert nicht.")]
+        [Range(0, 100)]
+        public int RevAcntWeight { get => _revAcntWeight; set { _revAcntWeight = value; RecalculateValues(); } }
+
+        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Display(Name = "Absorption Count: min. Level", GroupName = "semaPHorek-Ergaenzungen", Order = 331,
+            Description = "Ab wie vielen absorbierten Leveln der Treiber feuert (semaPHorek 'X of Y'). Ein Level zaehlt ab 50% des staerksten Level-Deltas. Default 2.")]
+        [Range(1, 10)]
+        public int RevAcntMin { get => _revAcntMin; set { _revAcntMin = Math.Max(1, value); RecalculateValues(); } }
+
+        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Display(Name = "Gewicht Volume Power Bar", GroupName = "semaPHorek-Ergaenzungen", Order = 332,
+            Description = "(D) Power-Kerze: hohes Volumen + Kerzenkoerper in Umkehr-Richtung. 0 = aus (Default). Per-Kerze -> saturiert nicht.")]
+        [Range(0, 100)]
+        public int RevPwrWeight { get => _revPwrWeight; set { _revPwrWeight = value; RecalculateValues(); } }
+
+        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Display(Name = "Power Bar: Volumen-Faktor", GroupName = "semaPHorek-Ergaenzungen", Order = 333,
+            Description = "Kerzen-Volumen >= Faktor * Ø-Bar-Volumen im Fenster, damit es als Power-Kerze zaehlt. Default 1.5.")]
+        [Range(1.0, 10.0)]
+        public decimal RevPwrVolMult { get => _revPwrVolMult; set { _revPwrVolMult = Math.Max(1.0m, value); RecalculateValues(); } }
+
+        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Display(Name = "Gewicht Kerzen-Delta", GroupName = "semaPHorek-Ergaenzungen", Order = 334,
+            Description = "(E) Netto-Delta der Umkehrkerze in Umkehr-Richtung (Long: Kaeufer-Delta am Tief, Short: Verkaeufer-Delta am Hoch). 0 = aus (Default).")]
+        [Range(0, 100)]
+        public int RevCdeltaWeight { get => _revCdeltaWeight; set { _revCdeltaWeight = value; RecalculateValues(); } }
+
+        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Display(Name = "Kerzen-Delta: Faktor", GroupName = "semaPHorek-Ergaenzungen", Order = 335,
+            Description = "Kerzen-Delta muss >= Faktor * Ø-|Bar-Delta| sein (in Umkehr-Richtung). Default 0.5.")]
+        [Range(0.0, 5.0)]
+        public decimal RevCdeltaFactor { get => _revCdeltaFactor; set { _revCdeltaFactor = Math.Max(0m, value); RecalculateValues(); } }
 
         [Tab(TabName = "Reversal", TabOrder = 3)]
         [Display(Name = "Speed-Spike Faktor (x Ø-Speed)", GroupName = "Treiber-Gewichte", Order = 320,
@@ -1893,6 +1938,32 @@ namespace OrderflowSignal
             return any ? best : c.Delta;
         }
 
+        // Absorption Count: Anzahl Level mit absorbiertem Gegen-Aggressor-Delta
+        // (>= Frac * staerkstem Level). Long-Umkehr -> absorbierte VERKAEUFER (d<0), Short -> KAEUFER (d>0).
+        private int AbsorbedLevelCount(IndicatorCandle c, int dir, decimal mld)
+        {
+            if (mld == 0m) return 0;
+            decimal thr = _revAcntFrac * Math.Abs(mld);
+            if (thr <= 0m) return 0;
+            int n = 0;
+            foreach (var pv in c.GetAllPriceLevels())
+            {
+                decimal d = pv.Ask - pv.Bid;          // > 0 = Kaeufer-Aggressor
+                if (dir > 0 && d <= -thr) n++;
+                else if (dir < 0 && d >= thr) n++;
+            }
+            return n;
+        }
+
+        // Volume Power Bar: Volumen >= Mult * Ø-Bar-Volumen UND Kerzenkoerper in Umkehr-Richtung.
+        private bool IsPowerBar(IndicatorCandle c, int dir, decimal avgVol)
+        {
+            if (avgVol <= 0m) return false;
+            bool bigVol = c.Volume >= _revPwrVolMult * avgVol;
+            bool body = dir > 0 ? c.Close > c.Open : c.Close < c.Open;
+            return bigVol && body;
+        }
+
         // Diagonale Imbalances zaehlen: Buy = Ask[p] >= Ratio * Bid[p-Tick],
         // Sell = Bid[p] >= Ratio * Ask[p+Tick]. Aktiv, wenn eine Seite >= minCount
         // erreicht und dominiert. Richtung = dominante Stapelseite.
@@ -2262,7 +2333,7 @@ namespace OrderflowSignal
             // Referenz-Extrema + CVD am Extrem + Ø Tape-Speed im Fenster.
             decimal minLow = decimal.MaxValue, maxHigh = decimal.MinValue;
             decimal cdAtLow = 0, cdAtHigh = 0;
-            decimal sumSpeed = 0, sumAbsDelta = 0;
+            decimal sumSpeed = 0, sumAbsDelta = 0, sumVol = 0;
             int speedN = 0;
             decimal firstClose = 0, prevClose = 0, path = 0;
             bool havePrev = false;
@@ -2276,15 +2347,18 @@ namespace OrderflowSignal
                 if (ci.High > maxHigh) { maxHigh = ci.High; cdAtHigh = cd; }
                 sumSpeed += BarSpeed(ci);
                 sumAbsDelta += Math.Abs(ci.Delta);
+                sumVol += ci.Volume;
                 speedN++;
                 if (!havePrev) { firstClose = ci.Close; prevClose = ci.Close; havePrev = true; }
                 else { path += Math.Abs(ci.Close - prevClose); prevClose = ci.Close; }
             }
             path += Math.Abs(c.Close - prevClose);   // aktuellen Bar in den Pfad einbeziehen
             decimal avgAbsDelta = speedN > 0 ? sumAbsDelta / speedN : 0m;
+            decimal avgVol = speedN > 0 ? sumVol / speedN : 0m;
 
             int totalW = _revDivWeight + _revAbsWeight + _revVpocWeight + _revExhWeight + _revSpeedWeight
-                       + _revImbWeight + _revAuctionWeight;
+                       + _revImbWeight + _revAuctionWeight
+                       + _revAcntWeight + _revPwrWeight + _revCdeltaWeight;
             if (totalW <= 0)
                 totalW = 1;
 
@@ -2323,6 +2397,10 @@ namespace OrderflowSignal
                     // A/B bei aktiver Diagnose IMMER auswerten (Anzeige), aber nur bei Gewicht > 0 werten.
                     bool imb = (_showRevDebug || _revImbWeight > 0) && HasImbStack(c, 1);
                     bool auc = (_showRevDebug || _revAuctionWeight > 0) && AuctionFinishedAtExtreme(c, true);
+                    // semaPHorek-Ergaenzungen (nur werten, wenn Gewicht > 0; Anzeige bei Diagnose).
+                    bool acnt = (_showRevDebug || _revAcntWeight > 0) && AbsorbedLevelCount(c, 1, signedMld) >= _revAcntMin;
+                    bool pwr  = (_showRevDebug || _revPwrWeight > 0) && IsPowerBar(c, 1, avgVol);
+                    bool cdlt = (_showRevDebug || _revCdeltaWeight > 0) && c.Delta >= _revCdeltaFactor * avgAbsDelta;
                     int s = 0;
                     if (divg) s += _revDivWeight;
                     if (absr) s += _revAbsWeight;
@@ -2331,10 +2409,13 @@ namespace OrderflowSignal
                     if (speedSpike) s += _revSpeedWeight;                 // Klimax-Tape am Tief
                     if (imb) s += _revImbWeight;
                     if (auc) s += _revAuctionWeight;
+                    if (acnt) s += _revAcntWeight;
+                    if (pwr) s += _revPwrWeight;
+                    if (cdlt) s += _revCdeltaWeight;
                     int pct = (int)Math.Round(100.0 * s / totalW);
                     if (pct >= _reversalThreshold)
                     {
-                        SetRevCand(1, pct, eff, strongDown, divg, absr, vpoc, exh, speedSpike, imb, auc);
+                        SetRevCand(1, pct, eff, strongDown, divg, absr, vpoc, exh, speedSpike, imb, auc, acnt, pwr, cdlt);
                         return pct;
                     }
                 }
@@ -2360,6 +2441,10 @@ namespace OrderflowSignal
                     // A/B bei aktiver Diagnose IMMER auswerten (Anzeige), aber nur bei Gewicht > 0 werten.
                     bool imb = (_showRevDebug || _revImbWeight > 0) && HasImbStack(c, -1);
                     bool auc = (_showRevDebug || _revAuctionWeight > 0) && AuctionFinishedAtExtreme(c, false);
+                    // semaPHorek-Ergaenzungen (nur werten, wenn Gewicht > 0; Anzeige bei Diagnose).
+                    bool acnt = (_showRevDebug || _revAcntWeight > 0) && AbsorbedLevelCount(c, -1, signedMld) >= _revAcntMin;
+                    bool pwr  = (_showRevDebug || _revPwrWeight > 0) && IsPowerBar(c, -1, avgVol);
+                    bool cdlt = (_showRevDebug || _revCdeltaWeight > 0) && c.Delta <= -_revCdeltaFactor * avgAbsDelta;
                     int s = 0;
                     if (divg) s += _revDivWeight;
                     if (absr) s += _revAbsWeight;
@@ -2368,10 +2453,13 @@ namespace OrderflowSignal
                     if (speedSpike) s += _revSpeedWeight;                 // Klimax-Tape am Hoch
                     if (imb) s += _revImbWeight;
                     if (auc) s += _revAuctionWeight;
+                    if (acnt) s += _revAcntWeight;
+                    if (pwr) s += _revPwrWeight;
+                    if (cdlt) s += _revCdeltaWeight;
                     int pct = (int)Math.Round(100.0 * s / totalW);
                     if (pct >= _reversalThreshold)
                     {
-                        SetRevCand(-1, pct, eff, strongUp, divg, absr, vpoc, exh, speedSpike, imb, auc);
+                        SetRevCand(-1, pct, eff, strongUp, divg, absr, vpoc, exh, speedSpike, imb, auc, acnt, pwr, cdlt);
                         return -pct;
                     }
                 }
@@ -2382,10 +2470,11 @@ namespace OrderflowSignal
 
         // Diagnose: Treiber-Aufschluesselung des aktuellen Reversal-Kandidaten merken.
         private void SetRevCand(int dir, int pct, decimal eff, bool strong,
-            bool div, bool abs, bool vpoc, bool exh, bool spd, bool imb, bool auc)
+            bool div, bool abs, bool vpoc, bool exh, bool spd, bool imb, bool auc,
+            bool acn, bool pwr, bool cdl)
         {
             _revCandDir = dir; _revCandPct = pct;
-            _revCand = new RevDbg { Eff = eff, Strong = strong, Div = div, Abs = abs, Vp = vpoc, Exh = exh, Spd = spd, Imb = imb, Auc = auc };
+            _revCand = new RevDbg { Eff = eff, Strong = strong, Div = div, Abs = abs, Vp = vpoc, Exh = exh, Spd = spd, Imb = imb, Auc = auc, Acn = acn, Pwr = pwr, Cdl = cdl };
         }
 
         // Tape-Speed der Kerze: Trades pro Sekunde (Ticks / Dauer). Historisch
@@ -2942,12 +3031,15 @@ namespace OrderflowSignal
             ("SPD", Color.FromArgb(255, 255,  90,  90)),  // rot       = Speed
             ("IMB", Color.FromArgb(255,  90, 220, 130)),  // gruen     = Imbalance-Flip
             ("AUC", Color.FromArgb(255, 235, 235, 235)),  // weiss     = Finished Auction
+            ("AC#", Color.FromArgb(255, 255, 180, 120)),  // hellorange= Absorption Count
+            ("PWR", Color.FromArgb(255, 120, 200, 255)),  // hellblau  = Volume Power Bar
+            ("CDl", Color.FromArgb(255, 200, 255, 140)),  // hellgruen = Kerzen-Delta
         };
 
         // Farbiger Diagnose-Tooltip an der gehoverten Raute.
         private void DrawRevHover(RenderContext context, int x, int y, int dir, int r, RevDbg d, (decimal Price, string Label)? kl)
         {
-            bool[] on = { d.Div, d.Abs, d.Vp, d.Exh, d.Spd, d.Imb, d.Auc };
+            bool[] on = { d.Div, d.Abs, d.Vp, d.Exh, d.Spd, d.Imb, d.Auc, d.Acn, d.Pwr, d.Cdl };
             string head = $"eff{d.Eff:0.00}{(d.Strong ? "  IMP" : "")}";
             var hsz = context.MeasureString(head, _font);
             const int gap = 7, pad = 7;
