@@ -152,6 +152,12 @@ namespace OrderflowSignal
         private bool _revEdgeOnly = false;
         private int _revEdgeTolerance = 6;   // Toleranz in Ticks zur Kante (High/Low/vPOC)
 
+        // ── KeyLevels-Konfluenz (Link zu KeyLevels; REINE Markierung, aendert Signale nicht) ──
+        private bool _klConfluence = true;
+        private int _klTolTicks = 4;
+        private readonly List<(decimal Price, string Label)> _klLevels = new();
+        private DateTime _klLastRead = DateTime.MinValue;
+
         // ── ALARM (Telegram via ATAS-Alarme) ───────────────────────────────
         // Latch: erst nach dem Historien-Nachladen alarmieren -> kein Spam alter Umkehren.
         private bool _histDone;
@@ -622,6 +628,19 @@ namespace OrderflowSignal
         [Range(0, 100)]
         [VisibleWhen(nameof(RevEdgeOnly), true)]
         public int RevEdgeTolerance { get => _revEdgeTolerance; set { _revEdgeTolerance = Math.Max(0, value); RedrawChart(); } }
+
+        // ── KeyLevels-Konfluenz (reine Markierung) ─────────────────────────
+        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Display(Name = "KeyLevels-Konfluenz markieren", GroupName = "KeyLevels-Konfluenz", Order = 360,
+            Description = "An = Reversals nahe an einem KeyLevel werden hervorgehoben (heller/groesserer Halo + 'KL'-Tag, im Hover das Level). Aendert die Signal-MENGE NICHT. Voraussetzung: in KeyLevels den 'Level-Export' aktivieren (Reiter Sync).")]
+        public bool KlConfluence { get => _klConfluence; set { _klConfluence = value; RedrawChart(); } }
+
+        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Display(Name = "KeyLevels-Toleranz (Ticks)", GroupName = "KeyLevels-Konfluenz", Order = 362,
+            Description = "Max. Abstand des Umkehr-Extrems zum KeyLevel, damit es als konfluent gilt. Default 4.")]
+        [Range(0, 50)]
+        [VisibleWhen(nameof(KlConfluence), true)]
+        public int KlTolTicks { get => _klTolTicks; set { _klTolTicks = Math.Max(0, value); RedrawChart(); } }
 
         // ── Alarm (Telegram) ───────────────────────────────────────────────
         [Tab(TabName = "Reversal", TabOrder = 3)]
@@ -2756,6 +2775,70 @@ namespace OrderflowSignal
             }
         }
 
+        // Austauschdatei mit den KeyLevels-Preisen (von KeyLevels geschrieben).
+        private static string KlSyncFilePath(string instrument)
+        {
+            string dir = System.IO.Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ATAS", "keylevels_sync");
+            string safe = instrument;
+            foreach (var ch in System.IO.Path.GetInvalidFileNameChars())
+                safe = safe.Replace(ch, '_');
+            if (string.IsNullOrWhiteSpace(safe)) safe = "instrument";
+            return System.IO.Path.Combine(dir, safe + ".txt");
+        }
+
+        // KeyLevels-Preise aus der Datei laden (gedrosselt ~3 s). Fehlt die Datei -> keine Konfluenz.
+        private void LoadKeyLevels()
+        {
+            if (!_klConfluence) return;
+            var now = DateTime.UtcNow;
+            if ((now - _klLastRead).TotalSeconds < 3) return;
+            _klLastRead = now;
+            var instr = InstrumentInfo?.Instrument;
+            if (string.IsNullOrEmpty(instr)) return;
+            try
+            {
+                string path = KlSyncFilePath(instr);
+                if (!System.IO.File.Exists(path)) { _klLevels.Clear(); return; }
+                var lines = System.IO.File.ReadAllLines(path);
+                _klLevels.Clear();
+                foreach (var line in lines)
+                {
+                    if (string.IsNullOrWhiteSpace(line)) continue;
+                    var parts = line.Split('\t');
+                    if (decimal.TryParse(parts[0], System.Globalization.NumberStyles.Any,
+                            System.Globalization.CultureInfo.InvariantCulture, out var p))
+                        _klLevels.Add((p, parts.Length > 1 ? parts[1] : ""));
+                }
+            }
+            catch { }
+        }
+
+        // Naechstes KeyLevel innerhalb Toleranz zum Preis; null wenn keins.
+        private (decimal Price, string Label)? NearestKeyLevel(decimal price)
+        {
+            if (!_klConfluence || _klLevels.Count == 0) return null;
+            decimal tick = InstrumentInfo?.TickSize ?? 0m;
+            if (tick <= 0m) return null;
+            decimal best = tick * _klTolTicks;
+            (decimal Price, string Label)? hit = null;
+            foreach (var lv in _klLevels)
+            {
+                decimal dd = Math.Abs(lv.Price - price);
+                if (dd <= best) { best = dd; hit = lv; }
+            }
+            return hit;
+        }
+
+        // Farbe aufhellen (Richtung Weiss) fuer die Konfluenz-Hervorhebung.
+        private static Color BrightenColor(Color c, double f = 0.4)
+        {
+            int r = (int)(c.R + (255 - c.R) * f);
+            int g = (int)(c.G + (255 - c.G) * f);
+            int b = (int)(c.B + (255 - c.B) * f);
+            return Color.FromArgb(c.A, Math.Min(255, r), Math.Min(255, g), Math.Min(255, b));
+        }
+
         // Reversal-Marker: Rauten (◆), getrennt von den Momentum-Pfeilen und
         // weiter vom Kurs weg gezeichnet, damit an einer Wende beide sichtbar sind.
         private void DrawReversalMarkers(RenderContext context)
@@ -2765,6 +2848,7 @@ namespace OrderflowSignal
             if (ChartInfo?.PriceChartContainer is not { } cont)
                 return;
 
+            LoadKeyLevels();   // KeyLevels-Preise (gedrosselt) fuer die Konfluenz-Markierung
             var region = cont.Region;
             decimal tick = InstrumentInfo?.TickSize ?? 0m;
             decimal offset = tick * (_markerTickOffset * 2 + 6);
@@ -2804,8 +2888,20 @@ namespace OrderflowSignal
 
                 var col = dir > 0 ? _colorRevBull : _colorRevBear;
 
+                // KeyLevels-Konfluenz: sitzt das Umkehr-Extrem nah an einem KeyLevel?
+                decimal extreme = dir > 0 ? c.Low : c.High;
+                var kl = NearestKeyLevel(extreme);
+                bool klConf = kl.HasValue;
+
                 // Raute als echtes Polygon zeichnen (Glyph ◆ rendert im ATAS-Font nicht).
                 int r = Math.Max(5, _fontSize / 2 + 1);
+                if (klConf)
+                {
+                    // heller, groesserer Halo hinter der Raute = konfluenter Reversal.
+                    int rr = r + 3;
+                    var halo = new[] { new Point(x, y - rr), new Point(x + rr, y), new Point(x, y + rr), new Point(x - rr, y) };
+                    context.FillPolygon(BrightenColor(col, 0.55), halo);
+                }
                 var pts = new[]
                 {
                     new Point(x, y - r),
@@ -2821,9 +2917,18 @@ namespace OrderflowSignal
                 int numY = dir > 0 ? y + r + 1 : y - r - nsz.Height - 1;
                 context.DrawString(num, _font, col, x - nsz.Width / 2, numY);
 
+                // "KL"-Tag ausserhalb der Zahl bei Konfluenz.
+                if (klConf)
+                {
+                    var klCol = Color.FromArgb(255, 120, 230, 160);
+                    var ksz = context.MeasureString("KL", _font);
+                    int kY = dir > 0 ? numY + nsz.Height : numY - ksz.Height;
+                    context.DrawString("KL", _font, klCol, x - ksz.Width / 2, kY);
+                }
+
                 // Diagnose-Tooltip nur an der Raute unter dem Mauszeiger (farbcodiert).
                 if (_showRevDebug && b == _hoverRevBar && _revDbgByBar.TryGetValue(b, out var dd))
-                    DrawRevHover(context, x, y, dir, r, dd);
+                    DrawRevHover(context, x, y, dir, r, dd, kl);
             }
         }
 
@@ -2840,7 +2945,7 @@ namespace OrderflowSignal
         };
 
         // Farbiger Diagnose-Tooltip an der gehoverten Raute.
-        private void DrawRevHover(RenderContext context, int x, int y, int dir, int r, RevDbg d)
+        private void DrawRevHover(RenderContext context, int x, int y, int dir, int r, RevDbg d, (decimal Price, string Label)? kl)
         {
             bool[] on = { d.Div, d.Abs, d.Vp, d.Exh, d.Spd, d.Imb, d.Auc };
             string head = $"eff{d.Eff:0.00}{(d.Strong ? "  IMP" : "")}";
@@ -2851,9 +2956,16 @@ namespace OrderflowSignal
             for (int i = 0; i < RevDriverColors.Length; i++)
                 lineW += context.MeasureString(RevDriverColors[i].Name, _font).Width + gap;
 
-            int boxW = Math.Max(hsz.Width, lineW) + pad * 2;
+            string klLine = kl.HasValue
+                ? ("KL " + kl.Value.Price.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                   + (string.IsNullOrEmpty(kl.Value.Label) ? "" : " " + kl.Value.Label))
+                : null;
+            int klW = klLine != null ? context.MeasureString(klLine, _font).Width : 0;
+
             int lineH = hsz.Height;
-            int boxH = lineH * 2 + pad * 2 + 2;
+            int boxW = Math.Max(Math.Max(hsz.Width, lineW), klW) + pad * 2;
+            int extra = klLine != null ? lineH + 2 : 0;
+            int boxH = lineH * 2 + pad * 2 + 2 + extra;
             int bx = x - boxW / 2;
             int by = dir > 0 ? y + r + 6 : y - r - boxH - 6;
 
@@ -2872,6 +2984,10 @@ namespace OrderflowSignal
                 context.DrawString(RevDriverColors[i].Name, _font, col, tx, ty);
                 tx += context.MeasureString(RevDriverColors[i].Name, _font).Width + gap;
             }
+
+            // Konfluenz-Zeile: naechstes KeyLevel (gruen).
+            if (klLine != null)
+                context.DrawString(klLine, _font, Color.FromArgb(255, 120, 230, 160), bx + pad, ty + lineH + 2);
         }
 
         // Maus-Hover: Raute unter dem Cursor bestimmen -> Tooltip einblenden.
