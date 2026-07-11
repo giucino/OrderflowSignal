@@ -141,7 +141,7 @@ namespace OrderflowSignal
 
         // Reversal-Diagnose: Treiber-Aufschluesselung der letzten ANGEZEIGTEN Raute.
         private bool _showRevDebug = false;
-        private struct RevDbg { public decimal Eff; public bool Strong, Div, Abs, Vp, Exh, Spd, Imb, Auc, Acn, Pwr, Cdl; }
+        private struct RevDbg { public decimal Eff; public bool Strong, Div, Abs, Vp, Exh, Spd, Imb, Auc, Acn, Pwr, Cdl; public int AcnN; public decimal PwrX, CdlX, SpdX; }
         private RevDbg _revCand; private int _revCandDir, _revCandPct;
         private readonly Dictionary<int, RevDbg> _revDbgByBar = new();   // Treiber je Raute (fuer Hover-Diagnose)
         private int _hoverRevBar = -1;                                   // Raute unter dem Mauszeiger
@@ -2365,6 +2365,7 @@ namespace OrderflowSignal
             // Speed-Spike: Tape am Extrem deutlich schneller als der Schnitt = Klimax.
             decimal avgSpeed = speedN > 0 ? sumSpeed / speedN : 0m;
             bool speedSpike = avgSpeed > 0 && BarSpeed(c) >= _revSpeedFactor * avgSpeed;
+            decimal spdX = avgSpeed > 0 ? BarSpeed(c) / avgSpeed : 0m;   // Speed-Ratio fuer Hover-Zahl
 
             // Impuls-Filter: Effizienz des Beins ins Extrem (|Netto-Weg| / Pfadlaenge).
             // Hoch + gerichtet = gesunder Impuls -> Gegentrend-Reversal nur mit Divergenz.
@@ -2397,10 +2398,13 @@ namespace OrderflowSignal
                     // A/B bei aktiver Diagnose IMMER auswerten (Anzeige), aber nur bei Gewicht > 0 werten.
                     bool imb = (_showRevDebug || _revImbWeight > 0) && HasImbStack(c, 1);
                     bool auc = (_showRevDebug || _revAuctionWeight > 0) && AuctionFinishedAtExtreme(c, true);
-                    // semaPHorek-Ergaenzungen (nur werten, wenn Gewicht > 0; Anzeige bei Diagnose).
-                    bool acnt = (_showRevDebug || _revAcntWeight > 0) && AbsorbedLevelCount(c, 1, signedMld) >= _revAcntMin;
+                    // semaPHorek-Ergaenzungen (nur werten, wenn Gewicht > 0; Anzeige + Zahl bei Diagnose).
+                    int acntN = (_showRevDebug || _revAcntWeight > 0) ? AbsorbedLevelCount(c, 1, signedMld) : 0;
+                    bool acnt = (_showRevDebug || _revAcntWeight > 0) && acntN >= _revAcntMin;
                     bool pwr  = (_showRevDebug || _revPwrWeight > 0) && IsPowerBar(c, 1, avgVol);
                     bool cdlt = (_showRevDebug || _revCdeltaWeight > 0) && c.Delta >= _revCdeltaFactor * avgAbsDelta;
+                    decimal pwrX = avgVol > 0 ? c.Volume / avgVol : 0m;
+                    decimal cdlX = avgAbsDelta > 0 ? c.Delta / avgAbsDelta : 0m;
                     int s = 0;
                     if (divg) s += _revDivWeight;
                     if (absr) s += _revAbsWeight;
@@ -2415,7 +2419,7 @@ namespace OrderflowSignal
                     int pct = (int)Math.Round(100.0 * s / totalW);
                     if (pct >= _reversalThreshold)
                     {
-                        SetRevCand(1, pct, eff, strongDown, divg, absr, vpoc, exh, speedSpike, imb, auc, acnt, pwr, cdlt);
+                        SetRevCand(1, pct, eff, strongDown, divg, absr, vpoc, exh, speedSpike, imb, auc, acnt, pwr, cdlt, acntN, pwrX, cdlX, spdX);
                         return pct;
                     }
                 }
@@ -2441,10 +2445,13 @@ namespace OrderflowSignal
                     // A/B bei aktiver Diagnose IMMER auswerten (Anzeige), aber nur bei Gewicht > 0 werten.
                     bool imb = (_showRevDebug || _revImbWeight > 0) && HasImbStack(c, -1);
                     bool auc = (_showRevDebug || _revAuctionWeight > 0) && AuctionFinishedAtExtreme(c, false);
-                    // semaPHorek-Ergaenzungen (nur werten, wenn Gewicht > 0; Anzeige bei Diagnose).
-                    bool acnt = (_showRevDebug || _revAcntWeight > 0) && AbsorbedLevelCount(c, -1, signedMld) >= _revAcntMin;
+                    // semaPHorek-Ergaenzungen (nur werten, wenn Gewicht > 0; Anzeige + Zahl bei Diagnose).
+                    int acntN = (_showRevDebug || _revAcntWeight > 0) ? AbsorbedLevelCount(c, -1, signedMld) : 0;
+                    bool acnt = (_showRevDebug || _revAcntWeight > 0) && acntN >= _revAcntMin;
                     bool pwr  = (_showRevDebug || _revPwrWeight > 0) && IsPowerBar(c, -1, avgVol);
                     bool cdlt = (_showRevDebug || _revCdeltaWeight > 0) && c.Delta <= -_revCdeltaFactor * avgAbsDelta;
+                    decimal pwrX = avgVol > 0 ? c.Volume / avgVol : 0m;
+                    decimal cdlX = avgAbsDelta > 0 ? c.Delta / avgAbsDelta : 0m;
                     int s = 0;
                     if (divg) s += _revDivWeight;
                     if (absr) s += _revAbsWeight;
@@ -2459,7 +2466,7 @@ namespace OrderflowSignal
                     int pct = (int)Math.Round(100.0 * s / totalW);
                     if (pct >= _reversalThreshold)
                     {
-                        SetRevCand(-1, pct, eff, strongUp, divg, absr, vpoc, exh, speedSpike, imb, auc, acnt, pwr, cdlt);
+                        SetRevCand(-1, pct, eff, strongUp, divg, absr, vpoc, exh, speedSpike, imb, auc, acnt, pwr, cdlt, acntN, pwrX, cdlX, spdX);
                         return -pct;
                     }
                 }
@@ -2471,10 +2478,10 @@ namespace OrderflowSignal
         // Diagnose: Treiber-Aufschluesselung des aktuellen Reversal-Kandidaten merken.
         private void SetRevCand(int dir, int pct, decimal eff, bool strong,
             bool div, bool abs, bool vpoc, bool exh, bool spd, bool imb, bool auc,
-            bool acn, bool pwr, bool cdl)
+            bool acn, bool pwr, bool cdl, int acnN, decimal pwrX, decimal cdlX, decimal spdX)
         {
             _revCandDir = dir; _revCandPct = pct;
-            _revCand = new RevDbg { Eff = eff, Strong = strong, Div = div, Abs = abs, Vp = vpoc, Exh = exh, Spd = spd, Imb = imb, Auc = auc, Acn = acn, Pwr = pwr, Cdl = cdl };
+            _revCand = new RevDbg { Eff = eff, Strong = strong, Div = div, Abs = abs, Vp = vpoc, Exh = exh, Spd = spd, Imb = imb, Auc = auc, Acn = acn, Pwr = pwr, Cdl = cdl, AcnN = acnN, PwrX = pwrX, CdlX = cdlX, SpdX = spdX };
         }
 
         // Tape-Speed der Kerze: Trades pro Sekunde (Ticks / Dauer). Historisch
@@ -3040,13 +3047,21 @@ namespace OrderflowSignal
         private void DrawRevHover(RenderContext context, int x, int y, int dir, int r, RevDbg d, (decimal Price, string Label)? kl)
         {
             bool[] on = { d.Div, d.Abs, d.Vp, d.Exh, d.Spd, d.Imb, d.Auc, d.Acn, d.Pwr, d.Cdl };
+            // Treiber-Tokens; die mit Magnitude bekommen ihre Zahl angehaengt.
+            string[] tok = new string[RevDriverColors.Length];
+            for (int i = 0; i < tok.Length; i++) tok[i] = RevDriverColors[i].Name;
+            tok[4] = $"SPD{d.SpdX:0.0}";   // Speed-Ratio
+            tok[7] = $"AC#{d.AcnN}";       // Anzahl absorbierter Level
+            tok[8] = $"PWR{d.PwrX:0.0}";   // Volumen-Faktor
+            tok[9] = $"CDl{d.CdlX:0.0}";   // Kerzen-Delta / Ø-|Delta|
+
             string head = $"eff{d.Eff:0.00}{(d.Strong ? "  IMP" : "")}";
             var hsz = context.MeasureString(head, _font);
             const int gap = 7, pad = 7;
 
             int lineW = 0;
-            for (int i = 0; i < RevDriverColors.Length; i++)
-                lineW += context.MeasureString(RevDriverColors[i].Name, _font).Width + gap;
+            for (int i = 0; i < tok.Length; i++)
+                lineW += context.MeasureString(tok[i], _font).Width + gap;
 
             string klLine = kl.HasValue
                 ? ("KL " + kl.Value.Price.ToString(System.Globalization.CultureInfo.InvariantCulture)
@@ -3069,12 +3084,12 @@ namespace OrderflowSignal
 
             int tx = bx + pad;
             int ty = by + pad + lineH + 2;
-            for (int i = 0; i < RevDriverColors.Length; i++)
+            for (int i = 0; i < tok.Length; i++)
             {
                 // gefeuert = volle Treiber-Farbe, sonst klares Dunkelgrau (eindeutig "aus").
                 var col = on[i] ? RevDriverColors[i].Col : Color.FromArgb(255, 78, 82, 92);
-                context.DrawString(RevDriverColors[i].Name, _font, col, tx, ty);
-                tx += context.MeasureString(RevDriverColors[i].Name, _font).Width + gap;
+                context.DrawString(tok[i], _font, col, tx, ty);
+                tx += context.MeasureString(tok[i], _font).Width + gap;
             }
 
             // Konfluenz-Zeile: naechstes KeyLevel (gruen).
