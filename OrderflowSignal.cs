@@ -172,7 +172,9 @@ namespace OrderflowSignal
         private struct BtPending { public int Dir, Age, Pct; public decimal Entry, Mfe, Mae; public DateTime Time; public RevDbg D; public bool Kl; }
         private readonly List<BtPending> _btPending = new();
 
-        // ── Position-Tool: SL/TP-Boxen automatisch an jedem Reversal einzeichnen (rein visuell, keine Order) ──
+        // ── Position-Tool: SL/TP-Boxen automatisch an jedem Signal einzeichnen (rein visuell, keine Order) ──
+        public enum PosSource { Reversal, Signal }
+        private PosSource _posSource = PosSource.Reversal;   // welche Signale ausgewertet werden
         private bool _posTool = false;
         private int _posSlTicks = 50;
         private int _posTpTicks = 100;
@@ -733,8 +735,14 @@ namespace OrderflowSignal
         // ── Position-Tool (SL/TP-Boxen an Signalen, rein visuell) ──────────
         [Tab(TabName = "Reversal", TabOrder = 3)]
         [Display(Name = "Position-Tool zeichnen", GroupName = "Position-Tool", Order = 390,
-            Description = "An = an jeder Reversal-Raute wird eine Entry-Linie + gruene TP-Zone + rote SL-Zone eingezeichnet und der Ausgang per First-Touch ausgewertet (Rahmen gruen=TP zuerst, rot=SL zuerst). Keine Order.")]
+            Description = "An = an jedem Signal wird eine Entry-Linie + gruene TP-Zone + rote SL-Zone eingezeichnet und der Ausgang per First-Touch ausgewertet (Rahmen gruen=TP zuerst, rot=SL zuerst). Keine Order.")]
         public bool PosTool { get => _posTool; set { _posTool = value; RecalculateValues(); } }
+
+        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Display(Name = "Signal-Quelle", GroupName = "Position-Tool", Order = 389,
+            Description = "Welche Signale das Tool auswertet: Reversal (Rauten) oder Signal (Momentum-Dreiecke).")]
+        [VisibleWhen(nameof(PosTool), true)]
+        public PosSource PosSignalSource { get => _posSource; set { _posSource = value; RecalculateValues(); } }
 
         [Tab(TabName = "Reversal", TabOrder = 3)]
         [Display(Name = "Statistik-Summenzeile", GroupName = "Position-Tool", Order = 396,
@@ -1794,7 +1802,10 @@ namespace OrderflowSignal
 
             SetSignal(bar, SignedScore(sig, o));
             if (sig != 0)
+            {
                 _lastSignalBar = bar;
+                if (_posSource == PosSource.Signal) AddPosPending(bar, c, GetSignal(bar));   // Position-Tool: Momentum-Signal
+            }
 
             int rev = RevEvaluate(bar, c, signedMld, _cumDeltaRun);
             if (rev != 0 && _revConfirm && !RevConfirmed(bar, Math.Sign(rev)))
@@ -1809,7 +1820,7 @@ namespace OrderflowSignal
                 // Treiber-Aufschluesselung der ANGEZEIGTEN Raute fuer die Hover-Diagnose.
                 _revDbgByBar[bar] = _revCand;
                 AddBacktestPending(c, rev);   // Backtest-Log: neue Umkehr aufnehmen (Ausgang folgt)
-                AddPosPending(bar, c, rev);   // Position-Tool: neuen Trade zur First-Touch-Auswertung aufnehmen
+                if (_posSource == PosSource.Reversal) AddPosPending(bar, c, rev);   // Position-Tool: Reversal
             }
 
             // Alarm (Telegram via ATAS) — NUR live (nach Historien-Nachladen), nicht rueckwirkend.
@@ -3348,7 +3359,7 @@ namespace OrderflowSignal
 
             for (int b = from; b <= to; b++)
             {
-                int v = GetRevSignal(b);
+                int v = _posSource == PosSource.Reversal ? GetRevSignal(b) : GetSignal(b);
                 if (v == 0)
                     continue;
                 var c = GetCandle(b);
