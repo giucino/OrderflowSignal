@@ -3064,7 +3064,7 @@ namespace OrderflowSignal
                 lineW += context.MeasureString(tok[i], _font).Width + gap;
 
             string klLine = kl.HasValue
-                ? ("KL " + kl.Value.Price.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                ? ("KL " + kl.Value.Price.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)
                    + (string.IsNullOrEmpty(kl.Value.Label) ? "" : " " + kl.Value.Label))
                 : null;
             int klW = klLine != null ? context.MeasureString(klLine, _font).Width : 0;
