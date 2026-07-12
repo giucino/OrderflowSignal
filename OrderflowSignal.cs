@@ -179,6 +179,12 @@ namespace OrderflowSignal
         private int _posBoxBars = 20;   // Breite der Boxen in Bars
         private Color _posSlColor = Color.FromArgb(55, 225, 70, 70);
         private Color _posTpColor = Color.FromArgb(55, 60, 200, 100);
+        private bool _posShowStats = true;
+        // First-Touch-Auswertung: welcher Preis (TP oder SL) kam zuerst?
+        private readonly List<(int Bar, int Dir, decimal Entry, decimal Tp, decimal Sl)> _posPend = new();
+        private readonly Dictionary<int, int> _posOutcome = new();   // bar -> 1 Win, -1 Loss, -2 ambivalent, 0 offen
+        private int _posW, _posL, _posAmb, _posOpen;
+        private long _posNetTicks;
 
         // ── ALARM (Telegram via ATAS-Alarme) ───────────────────────────────
         // Latch: erst nach dem Historien-Nachladen alarmieren -> kein Spam alter Umkehren.
@@ -717,20 +723,26 @@ namespace OrderflowSignal
         // ── Position-Tool (SL/TP-Boxen an Signalen, rein visuell) ──────────
         [Tab(TabName = "Reversal", TabOrder = 3)]
         [Display(Name = "Position-Tool zeichnen", GroupName = "Position-Tool", Order = 390,
-            Description = "An = an jeder Reversal-Raute wird automatisch eine Entry-Linie + gruene TP-Zone + rote SL-Zone eingezeichnet (SL/TP in Ticks). Rein visuell, keine Order, kein Rechnen.")]
-        public bool PosTool { get => _posTool; set { _posTool = value; RedrawChart(); } }
+            Description = "An = an jeder Reversal-Raute wird eine Entry-Linie + gruene TP-Zone + rote SL-Zone eingezeichnet und der Ausgang per First-Touch ausgewertet (Rahmen gruen=TP zuerst, rot=SL zuerst). Keine Order.")]
+        public bool PosTool { get => _posTool; set { _posTool = value; RecalculateValues(); } }
+
+        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Display(Name = "Statistik-Summenzeile", GroupName = "Position-Tool", Order = 396,
+            Description = "Zeigt unten links W/L, Trefferquote und Netto-Ticks/Punkte ueber alle geladenen Signale (fuer die aktuellen SL/TP).")]
+        [VisibleWhen(nameof(PosTool), true)]
+        public bool PosShowStats { get => _posShowStats; set { _posShowStats = value; RedrawChart(); } }
 
         [Tab(TabName = "Reversal", TabOrder = 3)]
         [Display(Name = "SL (Ticks)", GroupName = "Position-Tool", Order = 391, Description = "Stop-Abstand vom Entry in Ticks. Default 50.")]
         [Range(1, 1000)]
         [VisibleWhen(nameof(PosTool), true)]
-        public int PosSlTicks { get => _posSlTicks; set { _posSlTicks = Math.Max(1, value); RedrawChart(); } }
+        public int PosSlTicks { get => _posSlTicks; set { _posSlTicks = Math.Max(1, value); RecalculateValues(); } }
 
         [Tab(TabName = "Reversal", TabOrder = 3)]
         [Display(Name = "TP (Ticks)", GroupName = "Position-Tool", Order = 392, Description = "Ziel-Abstand vom Entry in Ticks. Default 100.")]
         [Range(1, 2000)]
         [VisibleWhen(nameof(PosTool), true)]
-        public int PosTpTicks { get => _posTpTicks; set { _posTpTicks = Math.Max(1, value); RedrawChart(); } }
+        public int PosTpTicks { get => _posTpTicks; set { _posTpTicks = Math.Max(1, value); RecalculateValues(); } }
 
         [Tab(TabName = "Reversal", TabOrder = 3)]
         [Display(Name = "Box-Breite (Bars)", GroupName = "Position-Tool", Order = 393, Description = "Wie weit die Boxen nach rechts reichen (in Bars). Default 20.")]
@@ -1671,6 +1683,8 @@ namespace OrderflowSignal
             _hoverRevBar = -1;
             _revDbgByBar.Clear();
             _btPending.Clear();
+            _posPend.Clear(); _posOutcome.Clear();
+            _posW = _posL = _posAmb = _posOpen = 0; _posNetTicks = 0;
             _histDone = false;   // erst nach erneutem Historien-Nachladen wieder alarmieren
             // _bigReqDone NICHT zuruecksetzen: Levels ueberleben einen reinen Recalc.
             // Neu-Anfrage nur bei frischer Instanz (_bigReqDone==false) oder _bigDirty.
@@ -1694,6 +1708,7 @@ namespace OrderflowSignal
                 return;
 
             UpdateBacktestLog(bar, c);   // offene Backtest-Eintraege mit diesem Bar fortschreiben/abschliessen
+            ResolvePosPending(bar, c);   // offene Position-Tool-Trades per First-Touch aufloesen
 
             // Metriken fuer das Perzentil-Fenster speichern.
             decimal signedMld = MaxLevelDeltaSigned(c);
@@ -1738,6 +1753,7 @@ namespace OrderflowSignal
                 // Treiber-Aufschluesselung der ANGEZEIGTEN Raute fuer die Hover-Diagnose.
                 _revDbgByBar[bar] = _revCand;
                 AddBacktestPending(c, rev);   // Backtest-Log: neue Umkehr aufnehmen (Ausgang folgt)
+                AddPosPending(bar, c, rev);   // Position-Tool: neuen Trade zur First-Touch-Auswertung aufnehmen
             }
 
             // Alarm (Telegram via ATAS) — NUR live (nach Historien-Nachladen), nicht rueckwirkend.
@@ -1764,6 +1780,42 @@ namespace OrderflowSignal
             AlertsEnabled = true;
             try { AddAlert(_alertSound, msg); }
             catch { /* Alarm darf nie die Berechnung stoppen */ }
+        }
+
+        // Position-Tool: neuen Trade (Entry=Close, feste TP/SL) zur First-Touch-Auswertung aufnehmen.
+        private void AddPosPending(int bar, IndicatorCandle c, int rev)
+        {
+            if (!_posTool) return;
+            decimal tick = InstrumentInfo?.TickSize ?? 0m;
+            if (tick <= 0m) return;
+            int dir = Math.Sign(rev);
+            decimal entry = c.Close;
+            decimal tp = dir > 0 ? entry + tick * _posTpTicks : entry - tick * _posTpTicks;
+            decimal sl = dir > 0 ? entry - tick * _posSlTicks : entry + tick * _posSlTicks;
+            _posPend.Add((bar, dir, entry, tp, sl));
+            _posOutcome[bar] = 0;   // offen bis aufgeloest
+            _posOpen++;
+        }
+
+        // Offene Position-Tool-Trades gegen diesen Bar pruefen: wurde TP oder SL zuerst beruehrt?
+        private void ResolvePosPending(int bar, IndicatorCandle c)
+        {
+            if (!_posTool || _posPend.Count == 0) return;
+            for (int i = _posPend.Count - 1; i >= 0; i--)
+            {
+                var p = _posPend[i];
+                if (p.Bar >= bar) continue;
+                bool tpHit = p.Dir > 0 ? c.High >= p.Tp : c.Low <= p.Tp;
+                bool slHit = p.Dir > 0 ? c.Low <= p.Sl : c.High >= p.Sl;
+                int oc = (tpHit && slHit) ? -2 : tpHit ? 1 : slHit ? -1 : 0;   // beide in 1 Kerze = ambivalent
+                if (oc == 0) continue;
+                _posOutcome[p.Bar] = oc;
+                _posOpen--;
+                if (oc == 1) { _posW++; _posNetTicks += _posTpTicks; }
+                else if (oc == -1) { _posL++; _posNetTicks -= _posSlTicks; }
+                else { _posAmb++; _posNetTicks -= _posSlTicks; }   // ambivalent -> pessimistisch als SL werten
+                _posPend.RemoveAt(i);
+            }
         }
 
         // Backtest-Log: neue Umkehr als offenen Eintrag aufnehmen (Treiber-Snapshot + Entry).
@@ -3216,8 +3268,28 @@ namespace OrderflowSignal
                 context.FillRectangle(_posSlColor, RectFromY(x1, yE, ySl, w));   // SL-Zone
                 context.DrawLine(new RenderPen(Color.FromArgb(255, 235, 235, 235), 1), x1, yE, xe, yE);
 
+                // Rahmen nach Ausgang faerben (First-Touch).
+                int oc = _posOutcome.TryGetValue(b, out var oo) ? oo : 0;
+                Color fr = oc == 1 ? Color.FromArgb(255, 70, 210, 110)
+                         : oc == -1 ? Color.FromArgb(255, 230, 75, 75)
+                         : oc == -2 ? Color.FromArgb(255, 235, 165, 45)
+                         : Color.FromArgb(150, 150, 150, 160);
+                context.DrawRectangle(new RenderPen(fr, oc == 0 ? 1 : 2), RectFromY(x1, yTp, ySl, w));
+
                 string lbl = (dir > 0 ? "L " : "S ") + rr + "R";
                 context.DrawString(lbl, _font, Color.FromArgb(255, 235, 235, 235), x1 + 2, yE - context.MeasureString(lbl, _font).Height - 1);
+            }
+
+            if (_posShowStats)
+            {
+                int decided = _posW + _posL;
+                double wr = decided > 0 ? 100.0 * _posW / decided : 0;
+                string s = $"Pos {_posTpTicks}/{_posSlTicks}:  {_posW}W {_posL}L" + (_posAmb > 0 ? $" {_posAmb}?" : "")
+                    + $"   {wr:0}%   Netto {(_posNetTicks >= 0 ? "+" : "")}{_posNetTicks}T ({_posNetTicks * 0.25:+0.0;-0.0} Pkt)   offen {_posOpen}";
+                var sz = context.MeasureString(s, _font);
+                int px = region.Left + 8, py = region.Bottom - sz.Height - 6;
+                context.FillRectangle(Color.FromArgb(205, 15, 18, 26), new Rectangle(px - 4, py - 2, sz.Width + 8, sz.Height + 4));
+                context.DrawString(s, _font, Color.FromArgb(255, 235, 235, 235), px, py);
             }
         }
 
