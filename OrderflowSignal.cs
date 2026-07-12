@@ -188,6 +188,10 @@ namespace OrderflowSignal
         private readonly Dictionary<int, int> _posOutcome = new();   // bar -> 1 Win, -1 Loss, -2 ambivalent, 0 offen
         private readonly int[] _psW = new int[3], _psL = new int[3], _psAmb = new int[3], _psOpen = new int[3];
         private readonly long[] _psNet = new long[3];
+        private decimal _posCostTicks = 3m;   // Kosten (Kommission + Slippage) pro Trade in Ticks
+        private readonly List<(int Bar, int Sess, int Oc)> _posResolved = new();   // fuer Serien (in Entry-Reihenfolge)
+        private readonly int[] _psMaxW = new int[3], _psMaxL = new int[3];
+        private int _posStreakN = -1;
 
         // ── ALARM (Telegram via ATAS-Alarme) ───────────────────────────────
         // Latch: erst nach dem Historien-Nachladen alarmieren -> kein Spam alter Umkehren.
@@ -734,6 +738,13 @@ namespace OrderflowSignal
             Description = "Zeigt unten links W/L, Trefferquote und Netto-Ticks/Punkte ueber alle geladenen Signale (fuer die aktuellen SL/TP).")]
         [VisibleWhen(nameof(PosTool), true)]
         public bool PosShowStats { get => _posShowStats; set { _posShowStats = value; RedrawChart(); } }
+
+        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Display(Name = "Kosten pro Trade (Ticks)", GroupName = "Position-Tool", Order = 396,
+            Description = "Kommission + Slippage pro Trade, wird vom Netto abgezogen (realistischere Zahl). Default 3.")]
+        [Range(0.0, 20.0)]
+        [VisibleWhen(nameof(PosTool), true)]
+        public decimal PosCostTicks { get => _posCostTicks; set { _posCostTicks = Math.Max(0m, value); RedrawChart(); } }
 
         [Tab(TabName = "Reversal", TabOrder = 3)]
         [Display(Name = "Session-Zeitzone (Std von UTC)", GroupName = "Position-Tool", Order = 397,
@@ -1719,6 +1730,7 @@ namespace OrderflowSignal
             _btPending.Clear();
             _posPend.Clear(); _posOutcome.Clear();
             Array.Clear(_psW, 0, 3); Array.Clear(_psL, 0, 3); Array.Clear(_psAmb, 0, 3); Array.Clear(_psOpen, 0, 3); Array.Clear(_psNet, 0, 3);
+            _posResolved.Clear(); Array.Clear(_psMaxW, 0, 3); Array.Clear(_psMaxL, 0, 3); _posStreakN = -1;
             _histDone = false;   // erst nach erneutem Historien-Nachladen wieder alarmieren
             // _bigReqDone NICHT zuruecksetzen: Levels ueberleben einen reinen Recalc.
             // Neu-Anfrage nur bei frischer Instanz (_bigReqDone==false) oder _bigDirty.
@@ -1862,8 +1874,26 @@ namespace OrderflowSignal
                     if (oc == 1) { _psW[s]++; _psNet[s] += _posTpTicks; }
                     else if (oc == -1) { _psL[s]++; _psNet[s] -= _posSlTicks; }
                     else { _psAmb[s]++; _psNet[s] -= _posSlTicks; }   // ambivalent -> pessimistisch als SL
+                    _posResolved.Add((p.Bar, s, oc));                 // fuer Serien-Berechnung (Entry-Bar)
                 }
                 _posPend.RemoveAt(i);
+            }
+        }
+
+        // Max. Gewinn-/Verlust-Serie je Session (in Entry-Reihenfolge). Gecacht ueber die Trade-Anzahl.
+        private void ComputeStreaks()
+        {
+            if (_posResolved.Count == _posStreakN) return;
+            _posStreakN = _posResolved.Count;
+            Array.Clear(_psMaxW, 0, 3); Array.Clear(_psMaxL, 0, 3);
+            var sorted = new List<(int Bar, int Sess, int Oc)>(_posResolved);
+            sorted.Sort((a, b) => a.Bar.CompareTo(b.Bar));   // Entry-Reihenfolge (Aufloesung != Entry)
+            var curW = new int[3]; var curL = new int[3];
+            foreach (var t in sorted)
+            {
+                int s = t.Sess;
+                if (t.Oc == 1) { curW[s]++; curL[s] = 0; if (curW[s] > _psMaxW[s]) _psMaxW[s] = curW[s]; }
+                else { curL[s]++; curW[s] = 0; if (curL[s] > _psMaxL[s]) _psMaxL[s] = curL[s]; }   // Loss + ambivalent
             }
         }
 
@@ -3331,17 +3361,20 @@ namespace OrderflowSignal
 
             if (_posShowStats)
             {
+                ComputeStreaks();
                 int px = region.Left + 8;
                 int lineH = context.MeasureString("Ag", _font).Height + 3;
                 var lines = new string[3];
                 int maxW = 0;
                 for (int si = 0; si < 3; si++)
                 {
-                    int dec = _psW[si] + _psL[si];
-                    double wr = dec > 0 ? 100.0 * _psW[si] / dec : 0;
-                    long net = _psNet[si];
-                    lines[si] = $"{SessNames[si]} {_posTpTicks}/{_posSlTicks}:  {_psW[si]}W {_psL[si]}L" + (_psAmb[si] > 0 ? $" {_psAmb[si]}?" : "")
-                        + $"  {wr:0}%  {(net >= 0 ? "+" : "")}{net}T ({net * 0.25:+0.0;-0.0} Pkt)  offen {_psOpen[si]}";
+                    int wl = _psW[si] + _psL[si];
+                    int dec = wl + _psAmb[si];                       // alle aufgeloesten Trades (mit Kosten)
+                    double wr = wl > 0 ? 100.0 * _psW[si] / wl : 0;
+                    decimal net = _psNet[si] - _posCostTicks * dec;  // Netto nach Kosten
+                    decimal per = dec > 0 ? net / dec : 0m;
+                    lines[si] = $"{SessNames[si]} {_posTpTicks}/{_posSlTicks}:  {_psW[si]}W/{_psL[si]}L" + (_psAmb[si] > 0 ? $" {_psAmb[si]}?" : "")
+                        + $"  {wr:0}%  Serie {_psMaxW[si]}W/{_psMaxL[si]}L  Netto {(net >= 0 ? "+" : "")}{net:0}T ({net * 0.25m:+0.0;-0.0} Pkt, {per:+0.0;-0.0}/Tr)  offen {_psOpen[si]}";
                     int w2 = context.MeasureString(lines[si], _font).Width;
                     if (w2 > maxW) maxW = w2;
                 }
