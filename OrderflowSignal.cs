@@ -172,6 +172,14 @@ namespace OrderflowSignal
         private struct BtPending { public int Dir, Age, Pct; public decimal Entry, Mfe, Mae; public DateTime Time; public RevDbg D; public bool Kl; }
         private readonly List<BtPending> _btPending = new();
 
+        // ── Position-Tool: SL/TP-Boxen automatisch an jedem Reversal einzeichnen (rein visuell, keine Order) ──
+        private bool _posTool = false;
+        private int _posSlTicks = 50;
+        private int _posTpTicks = 100;
+        private int _posBoxBars = 20;   // Breite der Boxen in Bars
+        private Color _posSlColor = Color.FromArgb(55, 225, 70, 70);
+        private Color _posTpColor = Color.FromArgb(55, 60, 200, 100);
+
         // ── ALARM (Telegram via ATAS-Alarme) ───────────────────────────────
         // Latch: erst nach dem Historien-Nachladen alarmieren -> kein Spam alter Umkehren.
         private bool _histDone;
@@ -705,6 +713,40 @@ namespace OrderflowSignal
         [Range(3, 100)]
         [VisibleWhen(nameof(BtLog), true)]
         public int BtHorizon { get => _btHorizon; set { _btHorizon = Math.Max(3, value); RecalculateValues(); } }
+
+        // ── Position-Tool (SL/TP-Boxen an Signalen, rein visuell) ──────────
+        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Display(Name = "Position-Tool zeichnen", GroupName = "Position-Tool", Order = 390,
+            Description = "An = an jeder Reversal-Raute wird automatisch eine Entry-Linie + gruene TP-Zone + rote SL-Zone eingezeichnet (SL/TP in Ticks). Rein visuell, keine Order, kein Rechnen.")]
+        public bool PosTool { get => _posTool; set { _posTool = value; RedrawChart(); } }
+
+        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Display(Name = "SL (Ticks)", GroupName = "Position-Tool", Order = 391, Description = "Stop-Abstand vom Entry in Ticks. Default 50.")]
+        [Range(1, 1000)]
+        [VisibleWhen(nameof(PosTool), true)]
+        public int PosSlTicks { get => _posSlTicks; set { _posSlTicks = Math.Max(1, value); RedrawChart(); } }
+
+        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Display(Name = "TP (Ticks)", GroupName = "Position-Tool", Order = 392, Description = "Ziel-Abstand vom Entry in Ticks. Default 100.")]
+        [Range(1, 2000)]
+        [VisibleWhen(nameof(PosTool), true)]
+        public int PosTpTicks { get => _posTpTicks; set { _posTpTicks = Math.Max(1, value); RedrawChart(); } }
+
+        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Display(Name = "Box-Breite (Bars)", GroupName = "Position-Tool", Order = 393, Description = "Wie weit die Boxen nach rechts reichen (in Bars). Default 20.")]
+        [Range(3, 300)]
+        [VisibleWhen(nameof(PosTool), true)]
+        public int PosBoxBars { get => _posBoxBars; set { _posBoxBars = Math.Max(3, value); RedrawChart(); } }
+
+        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Display(Name = "TP-Zone Farbe", GroupName = "Position-Tool", Order = 394)]
+        [VisibleWhen(nameof(PosTool), true)]
+        public Color PosTpColor { get => _posTpColor; set { _posTpColor = value; RedrawChart(); } }
+
+        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Display(Name = "SL-Zone Farbe", GroupName = "Position-Tool", Order = 395)]
+        [VisibleWhen(nameof(PosTool), true)]
+        public Color PosSlColor { get => _posSlColor; set { _posSlColor = value; RedrawChart(); } }
 
         // ── Alarm (Telegram) ───────────────────────────────────────────────
         [Tab(TabName = "Reversal", TabOrder = 3)]
@@ -2701,6 +2743,8 @@ namespace OrderflowSignal
                 DrawMarkers(context);
             if (_showReversalMarkers)
                 DrawReversalMarkers(context);
+            if (_posTool)
+                DrawPositionTools(context);
 
             if (_showHud)
                 DrawHud(context);
@@ -3122,6 +3166,65 @@ namespace OrderflowSignal
                 if (_showRevDebug && b == _hoverRevBar && _revDbgByBar.TryGetValue(b, out var dd))
                     DrawRevHover(context, x, y, dir, r, dd, kl);
             }
+        }
+
+        // Position-Tool: an jedem Reversal eine Entry-Linie + TP-Zone (gruen) + SL-Zone (rot) zeichnen.
+        // Rein visuell (kein Rechnen, keine Order) — Entry = Close der Umkehrkerze.
+        private void DrawPositionTools(RenderContext context)
+        {
+            if (ChartInfo?.PriceChartContainer is not { } cont)
+                return;
+            decimal tick = InstrumentInfo?.TickSize ?? 0m;
+            if (tick <= 0m)
+                return;
+            var region = cont.Region;
+            int lastBar = CurrentBar - 1;
+            int from = Math.Max(0, FirstVisibleBarNumber);
+            int to = Math.Min(lastBar, LastVisibleBarNumber);
+            decimal slD = tick * _posSlTicks, tpD = tick * _posTpTicks;
+            string rr = _posSlTicks > 0 ? ((double)_posTpTicks / _posSlTicks).ToString("0.0") : "-";
+
+            for (int b = from; b <= to; b++)
+            {
+                int v = GetRevSignal(b);
+                if (v == 0)
+                    continue;
+                var c = GetCandle(b);
+                if (c == null)
+                    continue;
+                int dir = Math.Sign(v);
+                decimal entry = c.Close;
+                decimal sl = dir > 0 ? entry - slD : entry + slD;
+                decimal tp = dir > 0 ? entry + tpD : entry - tpD;
+
+                int x1, xe, yE, ySl, yTp;
+                try
+                {
+                    x1 = cont.GetXByBar(b, false);
+                    xe = cont.GetXByBar(b + _posBoxBars, false);
+                    yE = cont.GetYByPrice(entry, false);
+                    ySl = cont.GetYByPrice(sl, false);
+                    yTp = cont.GetYByPrice(tp, false);
+                }
+                catch { continue; }
+                if (xe <= x1) xe = x1 + 60;
+                if (x1 > region.Right || xe < region.Left)
+                    continue;
+                int w = xe - x1;
+
+                context.FillRectangle(_posTpColor, RectFromY(x1, yE, yTp, w));   // TP-Zone
+                context.FillRectangle(_posSlColor, RectFromY(x1, yE, ySl, w));   // SL-Zone
+                context.DrawLine(new RenderPen(Color.FromArgb(255, 235, 235, 235), 1), x1, yE, xe, yE);
+
+                string lbl = (dir > 0 ? "L " : "S ") + rr + "R";
+                context.DrawString(lbl, _font, Color.FromArgb(255, 235, 235, 235), x1 + 2, yE - context.MeasureString(lbl, _font).Height - 1);
+            }
+        }
+
+        private static Rectangle RectFromY(int x, int y1, int y2, int w)
+        {
+            int top = Math.Min(y1, y2);
+            return new Rectangle(x, top, w, Math.Abs(y2 - y1));
         }
 
         // Feste Treiber-Farben fuer die Diagnose.
