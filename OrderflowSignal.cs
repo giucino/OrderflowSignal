@@ -166,6 +166,12 @@ namespace OrderflowSignal
         private readonly List<(decimal Price, string Label)> _klLevels = new();
         private DateTime _klLastRead = DateTime.MinValue;
 
+        // ── Backtest-Log (CSV): jede Umkehr + auto-gemessener Ausgang (MFE/MAE/Net) ──
+        private bool _btLog = false;
+        private int _btHorizon = 15;   // geschlossene Bars fuer die Ausgangsmessung
+        private struct BtPending { public int Dir, Age, Pct; public decimal Entry, Mfe, Mae; public DateTime Time; public RevDbg D; public bool Kl; }
+        private readonly List<BtPending> _btPending = new();
+
         // ── ALARM (Telegram via ATAS-Alarme) ───────────────────────────────
         // Latch: erst nach dem Historien-Nachladen alarmieren -> kein Spam alter Umkehren.
         private bool _histDone;
@@ -686,6 +692,19 @@ namespace OrderflowSignal
         [Range(0, 50)]
         [VisibleWhen(nameof(KlConfluence), true)]
         public int KlTolTicks { get => _klTolTicks; set { _klTolTicks = Math.Max(0, value); RedrawChart(); } }
+
+        // ── Backtest-Log ───────────────────────────────────────────────────
+        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Display(Name = "Backtest-Log (CSV)", GroupName = "Backtest", Order = 380,
+            Description = "An = jede Umkehr wird mit allen Treibern + auto-gemessenem Ausgang (MFE/MAE/Net ueber N Bars) in %APPDATA%\\ATAS\\ofs_backtest\\<Instrument>.csv geschrieben. Historie laden -> anhaken -> ganze Historie wird protokolliert. Reine Diagnose, keine Signal-Aenderung.")]
+        public bool BtLog { get => _btLog; set { _btLog = value; RecalculateValues(); } }
+
+        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Display(Name = "Log-Horizont (Bars)", GroupName = "Backtest", Order = 381,
+            Description = "Ueber wie viele geschlossene Bars der Ausgang (MFE/MAE/Net) gemessen wird. Default 15.")]
+        [Range(3, 100)]
+        [VisibleWhen(nameof(BtLog), true)]
+        public int BtHorizon { get => _btHorizon; set { _btHorizon = Math.Max(3, value); RecalculateValues(); } }
 
         // ── Alarm (Telegram) ───────────────────────────────────────────────
         [Tab(TabName = "Reversal", TabOrder = 3)]
@@ -1609,6 +1628,7 @@ namespace OrderflowSignal
             _lastRevBar = -1;
             _hoverRevBar = -1;
             _revDbgByBar.Clear();
+            _btPending.Clear();
             _histDone = false;   // erst nach erneutem Historien-Nachladen wieder alarmieren
             // _bigReqDone NICHT zuruecksetzen: Levels ueberleben einen reinen Recalc.
             // Neu-Anfrage nur bei frischer Instanz (_bigReqDone==false) oder _bigDirty.
@@ -1630,6 +1650,8 @@ namespace OrderflowSignal
             var c = GetCandle(bar);
             if (c == null)
                 return;
+
+            UpdateBacktestLog(bar, c);   // offene Backtest-Eintraege mit diesem Bar fortschreiben/abschliessen
 
             // Metriken fuer das Perzentil-Fenster speichern.
             decimal signedMld = MaxLevelDeltaSigned(c);
@@ -1673,6 +1695,7 @@ namespace OrderflowSignal
                 _lastRevBar = bar;
                 // Treiber-Aufschluesselung der ANGEZEIGTEN Raute fuer die Hover-Diagnose.
                 _revDbgByBar[bar] = _revCand;
+                AddBacktestPending(c, rev);   // Backtest-Log: neue Umkehr aufnehmen (Ausgang folgt)
             }
 
             // Alarm (Telegram via ATAS) — NUR live (nach Historien-Nachladen), nicht rueckwirkend.
@@ -1699,6 +1722,79 @@ namespace OrderflowSignal
             AlertsEnabled = true;
             try { AddAlert(_alertSound, msg); }
             catch { /* Alarm darf nie die Berechnung stoppen */ }
+        }
+
+        // Backtest-Log: neue Umkehr als offenen Eintrag aufnehmen (Treiber-Snapshot + Entry).
+        private void AddBacktestPending(IndicatorCandle c, int rev)
+        {
+            if (!_btLog) return;
+            int dir = Math.Sign(rev);
+            decimal extreme = dir > 0 ? c.Low : c.High;
+            _btPending.Add(new BtPending
+            {
+                Dir = dir, Age = 0, Pct = Math.Abs(rev),
+                Entry = c.Close, Mfe = 0, Mae = 0, Time = c.LastTime,
+                D = _revCand, Kl = NearestKeyLevel(extreme).HasValue
+            });
+        }
+
+        // Offene Eintraege je geschlossenem Bar fortschreiben (MFE/MAE) und nach Horizont abschliessen.
+        private void UpdateBacktestLog(int bar, IndicatorCandle c)
+        {
+            if (!_btLog || _btPending.Count == 0) return;
+            decimal tick = InstrumentInfo?.TickSize ?? 0m;
+            if (tick <= 0m) tick = 0.25m;
+            for (int i = _btPending.Count - 1; i >= 0; i--)
+            {
+                var p = _btPending[i];
+                decimal fav = p.Dir > 0 ? c.High - p.Entry : p.Entry - c.Low;   // fuer uns
+                decimal adv = p.Dir > 0 ? p.Entry - c.Low : c.High - p.Entry;   // gegen uns
+                if (fav > p.Mfe) p.Mfe = fav;
+                if (adv > p.Mae) p.Mae = adv;
+                p.Age++;
+                if (p.Age >= _btHorizon)
+                {
+                    decimal net = p.Dir > 0 ? c.Close - p.Entry : p.Entry - c.Close;
+                    WriteBacktestRow(p, tick, net);
+                    _btPending.RemoveAt(i);
+                }
+                else _btPending[i] = p;
+            }
+        }
+
+        // Eine abgeschlossene Umkehr als CSV-Zeile anhaengen.
+        private void WriteBacktestRow(BtPending p, decimal tick, decimal net)
+        {
+            try
+            {
+                var inv = System.Globalization.CultureInfo.InvariantCulture;
+                string dir = System.IO.Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ATAS", "ofs_backtest");
+                System.IO.Directory.CreateDirectory(dir);
+                string instr = InstrumentInfo?.Instrument ?? "instr";
+                foreach (var ch in System.IO.Path.GetInvalidFileNameChars()) instr = instr.Replace(ch, '_');
+                string path = System.IO.Path.Combine(dir, instr + ".csv");
+                if (!System.IO.File.Exists(path))
+                    System.IO.File.AppendAllText(path,
+                        "Time,Chart,Dir,Entry,Pct,Eff,DIV,ABS,VP,EXH,SPD,IMB,AUC,ACn,PWR,CDl,KL,MFEt,MAEt,NETt\n");
+                int B(bool b) => b ? 1 : 0;
+                string row = string.Join(",",
+                    p.Time.ToString("yyyy-MM-dd HH:mm:ss", inv),
+                    (_chartLabel ?? "").Replace(',', ' '),
+                    p.Dir > 0 ? "L" : "S",
+                    p.Entry.ToString(inv),
+                    p.Pct.ToString(inv),
+                    p.D.Eff.ToString("0.00", inv),
+                    B(p.D.Div), B(p.D.Abs), B(p.D.Vp), B(p.D.Exh),
+                    p.D.SpdX.ToString("0.0", inv), B(p.D.Imb), B(p.D.Auc),
+                    p.D.AcnN.ToString(inv), p.D.PwrX.ToString("0.0", inv), p.D.CdlX.ToString("0.0", inv),
+                    B(p.Kl),
+                    (p.Mfe / tick).ToString("0.0", inv),
+                    (p.Mae / tick).ToString("0.0", inv),
+                    (net / tick).ToString("0.0", inv));
+                System.IO.File.AppendAllText(path, row + "\n");
+            }
+            catch { }
         }
 
         private void ComputeLive()
@@ -2399,7 +2495,7 @@ namespace OrderflowSignal
                     bool imb = (_showRevDebug || _revImbWeight > 0) && HasImbStack(c, 1);
                     bool auc = (_showRevDebug || _revAuctionWeight > 0) && AuctionFinishedAtExtreme(c, true);
                     // semaPHorek-Ergaenzungen (nur werten, wenn Gewicht > 0; Anzeige + Zahl bei Diagnose).
-                    int acntN = (_showRevDebug || _revAcntWeight > 0) ? AbsorbedLevelCount(c, 1, signedMld) : 0;
+                    int acntN = (_showRevDebug || _revAcntWeight > 0 || _btLog) ? AbsorbedLevelCount(c, 1, signedMld) : 0;
                     bool acnt = (_showRevDebug || _revAcntWeight > 0) && acntN >= _revAcntMin;
                     bool pwr  = (_showRevDebug || _revPwrWeight > 0) && IsPowerBar(c, 1, avgVol);
                     bool cdlt = (_showRevDebug || _revCdeltaWeight > 0) && c.Delta >= _revCdeltaFactor * avgAbsDelta;
@@ -2446,7 +2542,7 @@ namespace OrderflowSignal
                     bool imb = (_showRevDebug || _revImbWeight > 0) && HasImbStack(c, -1);
                     bool auc = (_showRevDebug || _revAuctionWeight > 0) && AuctionFinishedAtExtreme(c, false);
                     // semaPHorek-Ergaenzungen (nur werten, wenn Gewicht > 0; Anzeige + Zahl bei Diagnose).
-                    int acntN = (_showRevDebug || _revAcntWeight > 0) ? AbsorbedLevelCount(c, -1, signedMld) : 0;
+                    int acntN = (_showRevDebug || _revAcntWeight > 0 || _btLog) ? AbsorbedLevelCount(c, -1, signedMld) : 0;
                     bool acnt = (_showRevDebug || _revAcntWeight > 0) && acntN >= _revAcntMin;
                     bool pwr  = (_showRevDebug || _revPwrWeight > 0) && IsPowerBar(c, -1, avgVol);
                     bool cdlt = (_showRevDebug || _revCdeltaWeight > 0) && c.Delta <= -_revCdeltaFactor * avgAbsDelta;
