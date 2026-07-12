@@ -183,10 +183,11 @@ namespace OrderflowSignal
         private int _sessTz = 2;    // Std von UTC -> lokale Zeit (CEST = +2)
         private int _sessAsia = 2, _sessLon = 8, _sessNy = 15, _sessNyEnd = 23;   // lokale Session-Grenzen (Std)
         private static readonly string[] SessNames = { "Asia  ", "London", "NY    " };
-        // First-Touch-Auswertung je Session (0=Asia, 1=London, 2=NY).
-        private readonly List<(int Bar, int Dir, int Sess, decimal Entry, decimal Tp, decimal Sl)> _posPend = new();
-        private readonly Dictionary<int, int> _posOutcome = new();   // bar -> 1 Win, -1 Loss, -2 ambivalent, 0 offen
-        private readonly int[] _psW = new int[3], _psL = new int[3], _psAmb = new int[3], _psOpen = new int[3];
+        private int _posBeTrigger = 0;   // SL auf Entry (Breakeven), sobald +X Ticks im Plus (0 = aus)
+        // First-Touch-Auswertung je Session (0=Asia, 1=London, 2=NY). MaxFav/BeArmed = laufender Zustand.
+        private readonly List<(int Bar, int Dir, int Sess, decimal Entry, decimal Tp, decimal Sl, decimal MaxFav, bool BeArmed)> _posPend = new();
+        private readonly Dictionary<int, int> _posOutcome = new();   // bar -> 1 Win, -1 Loss, -2 ambivalent, 2 Breakeven, 0 offen
+        private readonly int[] _psW = new int[3], _psL = new int[3], _psAmb = new int[3], _psBe = new int[3], _psOpen = new int[3];
         private readonly long[] _psNet = new long[3];
         private decimal _posCostTicks = 3m;   // Kosten (Kommission + Slippage) pro Trade in Ticks
         private readonly List<(int Bar, int Sess, int Oc)> _posResolved = new();   // fuer Serien (in Entry-Reihenfolge)
@@ -745,6 +746,13 @@ namespace OrderflowSignal
         [Range(0.0, 20.0)]
         [VisibleWhen(nameof(PosTool), true)]
         public decimal PosCostTicks { get => _posCostTicks; set { _posCostTicks = Math.Max(0m, value); RedrawChart(); } }
+
+        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Display(Name = "Breakeven bei +Ticks (0=aus)", GroupName = "Position-Tool", Order = 402,
+            Description = "Zieht den SL auf Entry, sobald der Trade +X Ticks im Plus war. Verlierer die vorher +X liefen werden dann Scratch (0) statt -SL. 0 = aus.")]
+        [Range(0, 500)]
+        [VisibleWhen(nameof(PosTool), true)]
+        public int PosBeTrigger { get => _posBeTrigger; set { _posBeTrigger = Math.Max(0, value); RecalculateValues(); } }
 
         [Tab(TabName = "Reversal", TabOrder = 3)]
         [Display(Name = "Session-Zeitzone (Std von UTC)", GroupName = "Position-Tool", Order = 397,
@@ -1729,7 +1737,7 @@ namespace OrderflowSignal
             _revDbgByBar.Clear();
             _btPending.Clear();
             _posPend.Clear(); _posOutcome.Clear();
-            Array.Clear(_psW, 0, 3); Array.Clear(_psL, 0, 3); Array.Clear(_psAmb, 0, 3); Array.Clear(_psOpen, 0, 3); Array.Clear(_psNet, 0, 3);
+            Array.Clear(_psW, 0, 3); Array.Clear(_psL, 0, 3); Array.Clear(_psAmb, 0, 3); Array.Clear(_psBe, 0, 3); Array.Clear(_psOpen, 0, 3); Array.Clear(_psNet, 0, 3);
             _posResolved.Clear(); Array.Clear(_psMaxW, 0, 3); Array.Clear(_psMaxL, 0, 3); _posStreakN = -1;
             _histDone = false;   // erst nach erneutem Historien-Nachladen wieder alarmieren
             // _bigReqDone NICHT zuruecksetzen: Levels ueberleben einen reinen Recalc.
@@ -1839,7 +1847,7 @@ namespace OrderflowSignal
             decimal entry = c.Close;
             decimal tp = dir > 0 ? entry + tick * _posTpTicks : entry - tick * _posTpTicks;
             decimal sl = dir > 0 ? entry - tick * _posSlTicks : entry + tick * _posSlTicks;
-            _posPend.Add((bar, dir, sess, entry, tp, sl));
+            _posPend.Add((bar, dir, sess, entry, tp, sl, 0m, false));
             _posOutcome[bar] = 0;   // offen bis aufgeloest
             if (sess >= 0) _psOpen[sess]++;
         }
@@ -1858,23 +1866,37 @@ namespace OrderflowSignal
         private void ResolvePosPending(int bar, IndicatorCandle c)
         {
             if (!_posTool || _posPend.Count == 0) return;
+            decimal beDist = _posBeTrigger > 0 ? (InstrumentInfo?.TickSize ?? 0m) * _posBeTrigger : 0m;
             for (int i = _posPend.Count - 1; i >= 0; i--)
             {
                 var p = _posPend[i];
                 if (p.Bar >= bar) continue;
+                decimal fav = p.Dir > 0 ? c.High - p.Entry : p.Entry - c.Low;
+                decimal stop = p.BeArmed ? p.Entry : p.Sl;   // Breakeven verschiebt den Stop auf Entry
                 bool tpHit = p.Dir > 0 ? c.High >= p.Tp : c.Low <= p.Tp;
-                bool slHit = p.Dir > 0 ? c.Low <= p.Sl : c.High >= p.Sl;
-                int oc = (tpHit && slHit) ? -2 : tpHit ? 1 : slHit ? -1 : 0;   // beide in 1 Kerze = ambivalent
-                if (oc == 0) continue;
+                bool slHit = p.Dir > 0 ? c.Low <= stop : c.High >= stop;
+                // 1=Win, 2=Breakeven-Scratch, -1=Loss, -2=ambivalent (beide in 1 Kerze, pessimistisch)
+                int oc;
+                if (tpHit && slHit) oc = p.BeArmed ? 2 : -2;
+                else if (tpHit) oc = 1;
+                else if (slHit) oc = p.BeArmed ? 2 : -1;
+                else
+                {
+                    if (fav > p.MaxFav) p.MaxFav = fav;
+                    if (beDist > 0m && p.MaxFav >= beDist) p.BeArmed = true;
+                    _posPend[i] = p;   // Zustand (MaxFav/BeArmed) zurueckschreiben
+                    continue;
+                }
                 _posOutcome[p.Bar] = oc;
                 int s = p.Sess;
                 if (s >= 0)
                 {
                     _psOpen[s]--;
                     if (oc == 1) { _psW[s]++; _psNet[s] += _posTpTicks; }
+                    else if (oc == 2) { _psBe[s]++; }                  // Breakeven -> netto 0 (nur Kosten)
                     else if (oc == -1) { _psL[s]++; _psNet[s] -= _posSlTicks; }
-                    else { _psAmb[s]++; _psNet[s] -= _posSlTicks; }   // ambivalent -> pessimistisch als SL
-                    _posResolved.Add((p.Bar, s, oc));                 // fuer Serien-Berechnung (Entry-Bar)
+                    else { _psAmb[s]++; _psNet[s] -= _posSlTicks; }    // ambivalent -> pessimistisch als SL
+                    _posResolved.Add((p.Bar, s, oc));
                 }
                 _posPend.RemoveAt(i);
             }
@@ -1893,6 +1915,7 @@ namespace OrderflowSignal
             {
                 int s = t.Sess;
                 if (t.Oc == 1) { curW[s]++; curL[s] = 0; if (curW[s] > _psMaxW[s]) _psMaxW[s] = curW[s]; }
+                else if (t.Oc == 2) { curW[s] = 0; curL[s] = 0; }   // Breakeven = neutral, bricht beide Serien
                 else { curL[s]++; curW[s] = 0; if (curL[s] > _psMaxL[s]) _psMaxL[s] = curL[s]; }   // Loss + ambivalent
             }
         }
@@ -3350,6 +3373,7 @@ namespace OrderflowSignal
                 // Rahmen nach Ausgang faerben (First-Touch).
                 int oc = _posOutcome.TryGetValue(b, out var oo) ? oo : 0;
                 Color fr = oc == 1 ? Color.FromArgb(255, 70, 210, 110)
+                         : oc == 2 ? Color.FromArgb(255, 150, 175, 210)   // Breakeven-Scratch
                          : oc == -1 ? Color.FromArgb(255, 230, 75, 75)
                          : oc == -2 ? Color.FromArgb(255, 235, 165, 45)
                          : Color.FromArgb(150, 150, 150, 160);
@@ -3368,12 +3392,12 @@ namespace OrderflowSignal
                 int maxW = 0;
                 for (int si = 0; si < 3; si++)
                 {
-                    int wl = _psW[si] + _psL[si];
-                    int dec = wl + _psAmb[si];                       // alle aufgeloesten Trades (mit Kosten)
+                    int wl = _psW[si] + _psL[si] + _psAmb[si];        // entschiedene (Win/Loss) fuer die Quote
+                    int dec = wl + _psBe[si];                         // alle aufgeloesten Trades (mit Kosten)
                     double wr = wl > 0 ? 100.0 * _psW[si] / wl : 0;
                     decimal net = _psNet[si] - _posCostTicks * dec;  // Netto nach Kosten
                     decimal per = dec > 0 ? net / dec : 0m;
-                    lines[si] = $"{SessNames[si]} {_posTpTicks}/{_posSlTicks}:  {_psW[si]}W/{_psL[si]}L" + (_psAmb[si] > 0 ? $" {_psAmb[si]}?" : "")
+                    lines[si] = $"{SessNames[si]} {_posTpTicks}/{_posSlTicks}:  {_psW[si]}W/{_psL[si]}L" + (_psAmb[si] > 0 ? $" {_psAmb[si]}?" : "") + (_psBe[si] > 0 ? $" {_psBe[si]}BE" : "")
                         + $"  {wr:0}%  Serie {_psMaxW[si]}W/{_psMaxL[si]}L  Netto {(net >= 0 ? "+" : "")}{net:0}T ({net * 0.25m:+0.0;-0.0} Pkt, {per:+0.0;-0.0}/Tr)  offen {_psOpen[si]}";
                     int w2 = context.MeasureString(lines[si], _font).Width;
                     if (w2 > maxW) maxW = w2;
