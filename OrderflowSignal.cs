@@ -180,11 +180,14 @@ namespace OrderflowSignal
         private Color _posSlColor = Color.FromArgb(55, 225, 70, 70);
         private Color _posTpColor = Color.FromArgb(55, 60, 200, 100);
         private bool _posShowStats = true;
-        // First-Touch-Auswertung: welcher Preis (TP oder SL) kam zuerst?
-        private readonly List<(int Bar, int Dir, decimal Entry, decimal Tp, decimal Sl)> _posPend = new();
+        private int _sessTz = 2;    // Std von UTC -> lokale Zeit (CEST = +2)
+        private int _sessAsia = 2, _sessLon = 8, _sessNy = 15, _sessNyEnd = 23;   // lokale Session-Grenzen (Std)
+        private static readonly string[] SessNames = { "Asia  ", "London", "NY    " };
+        // First-Touch-Auswertung je Session (0=Asia, 1=London, 2=NY).
+        private readonly List<(int Bar, int Dir, int Sess, decimal Entry, decimal Tp, decimal Sl)> _posPend = new();
         private readonly Dictionary<int, int> _posOutcome = new();   // bar -> 1 Win, -1 Loss, -2 ambivalent, 0 offen
-        private int _posW, _posL, _posAmb, _posOpen;
-        private long _posNetTicks;
+        private readonly int[] _psW = new int[3], _psL = new int[3], _psAmb = new int[3], _psOpen = new int[3];
+        private readonly long[] _psNet = new long[3];
 
         // ── ALARM (Telegram via ATAS-Alarme) ───────────────────────────────
         // Latch: erst nach dem Historien-Nachladen alarmieren -> kein Spam alter Umkehren.
@@ -731,6 +734,37 @@ namespace OrderflowSignal
             Description = "Zeigt unten links W/L, Trefferquote und Netto-Ticks/Punkte ueber alle geladenen Signale (fuer die aktuellen SL/TP).")]
         [VisibleWhen(nameof(PosTool), true)]
         public bool PosShowStats { get => _posShowStats; set { _posShowStats = value; RedrawChart(); } }
+
+        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Display(Name = "Session-Zeitzone (Std von UTC)", GroupName = "Position-Tool", Order = 397,
+            Description = "Verschiebt die Kerzenzeit (UTC) in deine lokale Zeit fuer die Session-Zuordnung. Deutschland Sommer = +2 (CEST).")]
+        [Range(-12, 14)]
+        [VisibleWhen(nameof(PosTool), true)]
+        public int SessTz { get => _sessTz; set { _sessTz = value; RecalculateValues(); } }
+
+        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Display(Name = "Asia Start (Std, lokal)", GroupName = "Position-Tool", Order = 398, Description = "Beginn Asia-Session in lokaler Zeit. Default 2 (02:00).")]
+        [Range(0, 23)]
+        [VisibleWhen(nameof(PosTool), true)]
+        public int SessAsia { get => _sessAsia; set { _sessAsia = Math.Clamp(value, 0, 23); RecalculateValues(); } }
+
+        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Display(Name = "London Start (Std, lokal)", GroupName = "Position-Tool", Order = 399, Description = "Beginn London-Session (= Ende Asia). Default 8 (08:00).")]
+        [Range(0, 23)]
+        [VisibleWhen(nameof(PosTool), true)]
+        public int SessLon { get => _sessLon; set { _sessLon = Math.Clamp(value, 0, 23); RecalculateValues(); } }
+
+        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Display(Name = "New York Start (Std, lokal)", GroupName = "Position-Tool", Order = 400, Description = "Beginn NY-Session (= Ende London). Default 15 (15:00).")]
+        [Range(0, 23)]
+        [VisibleWhen(nameof(PosTool), true)]
+        public int SessNy { get => _sessNy; set { _sessNy = Math.Clamp(value, 0, 23); RecalculateValues(); } }
+
+        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Display(Name = "New York Ende (Std, lokal)", GroupName = "Position-Tool", Order = 401, Description = "Ende NY-Session. Default 23 (23:00).")]
+        [Range(0, 24)]
+        [VisibleWhen(nameof(PosTool), true)]
+        public int SessNyEnd { get => _sessNyEnd; set { _sessNyEnd = Math.Clamp(value, 1, 24); RecalculateValues(); } }
 
         [Tab(TabName = "Reversal", TabOrder = 3)]
         [Display(Name = "SL (Ticks)", GroupName = "Position-Tool", Order = 391, Description = "Stop-Abstand vom Entry in Ticks. Default 50.")]
@@ -1684,7 +1718,7 @@ namespace OrderflowSignal
             _revDbgByBar.Clear();
             _btPending.Clear();
             _posPend.Clear(); _posOutcome.Clear();
-            _posW = _posL = _posAmb = _posOpen = 0; _posNetTicks = 0;
+            Array.Clear(_psW, 0, 3); Array.Clear(_psL, 0, 3); Array.Clear(_psAmb, 0, 3); Array.Clear(_psOpen, 0, 3); Array.Clear(_psNet, 0, 3);
             _histDone = false;   // erst nach erneutem Historien-Nachladen wieder alarmieren
             // _bigReqDone NICHT zuruecksetzen: Levels ueberleben einen reinen Recalc.
             // Neu-Anfrage nur bei frischer Instanz (_bigReqDone==false) oder _bigDirty.
@@ -1789,12 +1823,23 @@ namespace OrderflowSignal
             decimal tick = InstrumentInfo?.TickSize ?? 0m;
             if (tick <= 0m) return;
             int dir = Math.Sign(rev);
+            int sess = SessionOf(c);
             decimal entry = c.Close;
             decimal tp = dir > 0 ? entry + tick * _posTpTicks : entry - tick * _posTpTicks;
             decimal sl = dir > 0 ? entry - tick * _posSlTicks : entry + tick * _posSlTicks;
-            _posPend.Add((bar, dir, entry, tp, sl));
+            _posPend.Add((bar, dir, sess, entry, tp, sl));
             _posOutcome[bar] = 0;   // offen bis aufgeloest
-            _posOpen++;
+            if (sess >= 0) _psOpen[sess]++;
+        }
+
+        // Session anhand der (offset-korrigierten) Kerzenzeit: 0=Asia, 1=London, 2=NY, -1=ausserhalb.
+        private int SessionOf(IndicatorCandle c)
+        {
+            int h = c.Time.AddHours(_sessTz).Hour;
+            if (h >= _sessAsia && h < _sessLon) return 0;
+            if (h >= _sessLon && h < _sessNy) return 1;
+            if (h >= _sessNy && h < _sessNyEnd) return 2;
+            return -1;
         }
 
         // Offene Position-Tool-Trades gegen diesen Bar pruefen: wurde TP oder SL zuerst beruehrt?
@@ -1810,10 +1855,14 @@ namespace OrderflowSignal
                 int oc = (tpHit && slHit) ? -2 : tpHit ? 1 : slHit ? -1 : 0;   // beide in 1 Kerze = ambivalent
                 if (oc == 0) continue;
                 _posOutcome[p.Bar] = oc;
-                _posOpen--;
-                if (oc == 1) { _posW++; _posNetTicks += _posTpTicks; }
-                else if (oc == -1) { _posL++; _posNetTicks -= _posSlTicks; }
-                else { _posAmb++; _posNetTicks -= _posSlTicks; }   // ambivalent -> pessimistisch als SL werten
+                int s = p.Sess;
+                if (s >= 0)
+                {
+                    _psOpen[s]--;
+                    if (oc == 1) { _psW[s]++; _psNet[s] += _posTpTicks; }
+                    else if (oc == -1) { _psL[s]++; _psNet[s] -= _posSlTicks; }
+                    else { _psAmb[s]++; _psNet[s] -= _posSlTicks; }   // ambivalent -> pessimistisch als SL
+                }
                 _posPend.RemoveAt(i);
             }
         }
@@ -3282,14 +3331,25 @@ namespace OrderflowSignal
 
             if (_posShowStats)
             {
-                int decided = _posW + _posL;
-                double wr = decided > 0 ? 100.0 * _posW / decided : 0;
-                string s = $"Pos {_posTpTicks}/{_posSlTicks}:  {_posW}W {_posL}L" + (_posAmb > 0 ? $" {_posAmb}?" : "")
-                    + $"   {wr:0}%   Netto {(_posNetTicks >= 0 ? "+" : "")}{_posNetTicks}T ({_posNetTicks * 0.25:+0.0;-0.0} Pkt)   offen {_posOpen}";
-                var sz = context.MeasureString(s, _font);
-                int px = region.Left + 8, py = region.Bottom - sz.Height - 6;
-                context.FillRectangle(Color.FromArgb(205, 15, 18, 26), new Rectangle(px - 4, py - 2, sz.Width + 8, sz.Height + 4));
-                context.DrawString(s, _font, Color.FromArgb(255, 235, 235, 235), px, py);
+                int px = region.Left + 8;
+                int lineH = context.MeasureString("Ag", _font).Height + 3;
+                var lines = new string[3];
+                int maxW = 0;
+                for (int si = 0; si < 3; si++)
+                {
+                    int dec = _psW[si] + _psL[si];
+                    double wr = dec > 0 ? 100.0 * _psW[si] / dec : 0;
+                    long net = _psNet[si];
+                    lines[si] = $"{SessNames[si]} {_posTpTicks}/{_posSlTicks}:  {_psW[si]}W {_psL[si]}L" + (_psAmb[si] > 0 ? $" {_psAmb[si]}?" : "")
+                        + $"  {wr:0}%  {(net >= 0 ? "+" : "")}{net}T ({net * 0.25:+0.0;-0.0} Pkt)  offen {_psOpen[si]}";
+                    int w2 = context.MeasureString(lines[si], _font).Width;
+                    if (w2 > maxW) maxW = w2;
+                }
+                int py0 = region.Bottom - lineH * 3 - 6;
+                context.FillRectangle(Color.FromArgb(210, 15, 18, 26), new Rectangle(px - 4, py0 - 2, maxW + 8, lineH * 3 + 4));
+                var sc = new[] { Color.FromArgb(255, 120, 200, 255), Color.FromArgb(255, 120, 230, 160), Color.FromArgb(255, 240, 180, 90) };
+                for (int si = 0; si < 3; si++)
+                    context.DrawString(lines[si], _font, sc[si], px, py0 + si * lineH);
             }
         }
 
