@@ -26,7 +26,7 @@ namespace OrderflowSignal
         //  EINSTELLUNGEN — Allgemein
         // ─────────────────────────────────────────────────────────────────
         // Kalibrierungs-Fenster: Anzahl Bars, ueber die die Perzentil-Schwellen
-        // bestimmt werden (= semaPHoreks "Last N Bars").
+        // bestimmt werden (= die letzten N Bars).
         private int _lookback = 50;
 
         private int _signalThreshold = 50;   // Mindest-Gewichtssumme der dominanten Seite
@@ -47,7 +47,7 @@ namespace OrderflowSignal
         // ─────────────────────────────────────────────────────────────────
         // Globaler Perzentil-Wert (Basic). Schwelle = dieses Perzentil der letzten
         // N Bars; ein Bar ist "aktiv", wenn seine Metrik >= Schwelle (also in den
-        // oberen (100 - P) % liegt). Default 95 = semaPHoreks erprobte Selektivitaet.
+        // oberen (100 - P) % liegt). Default 95 = erprobte Selektivitaet.
         private int _globalPercentile = 95;
 
         // Advanced: pro Bedingung eigenen Perzentil-Wert verwenden.
@@ -129,7 +129,7 @@ namespace OrderflowSignal
         private int _revSpeedWeight = 15;     // Speed of Tape: Klimax-Spike am Extrem
         private int _revImbWeight = 0;        // (A) frischer Imbalance-Flip am Extrem (Default aus)
         private int _revAuctionWeight = 0;    // (B) Finished Auction am Extrem (Default aus)
-        // semaPHorek-Ergaenzungen (alle Default-Gewicht 0 = neutral, aendern nichts):
+        // Zusatz-Treiber (alle Default-Gewicht 0 = neutral, aendern nichts):
         private int _revAcntWeight = 0;         // (C) Absorption Count: mehrere absorbierte Level
         private int _revAcntMin = 2;            // min. Anzahl absorbierter Level ("X of Y")
         private decimal _revAcntFrac = 0.5m;    // Level zaehlt ab Frac * staerkstem Level-Delta
@@ -252,7 +252,7 @@ namespace OrderflowSignal
 
         private int _lastProcessedBar = -1;
         // Pro Bar gespeicherter SIGNIERTER Score: > 0 Long, < 0 Short, 0 keins.
-        // Betrag = Gewichtssumme der dominanten Seite (Staerke, wie semaPHoreks Lichter-Zahl).
+        // Betrag = Gewichtssumme der dominanten Seite (Staerke = gefeuerte Bedingungen).
         private readonly List<int> _signals = new();
         private int _lastSignalBar = -1;
 
@@ -386,7 +386,7 @@ namespace OrderflowSignal
 
         [Tab(TabName = "Signal", TabOrder = 2)]
         [Display(Name = "Freeze (Kalibrierung einfrieren)", GroupName = "Kalibrierung", Order = 234,
-            Description = "Friert die aktuellen Schwellen ein (wie ein semaPHorek-Template). Aus = rollend live.")]
+            Description = "Friert die aktuellen Schwellen ein (wie ein gespeichertes Template). Aus = rollend live.")]
         public bool FreezeCalibration
         {
             get => _freezeCalibration;
@@ -599,39 +599,39 @@ namespace OrderflowSignal
         [Range(0, 100)]
         public int RevAuctionWeight { get => _revAuctionWeight; set { _revAuctionWeight = value; RecalculateValues(); } }
 
-        // ── semaPHorek-Ergaenzungen (Default-Gewicht 0 = neutral) ──────────
+        // ── Zusatz-Treiber (Default-Gewicht 0 = neutral) ──────────
         [Tab(TabName = "Reversal", TabOrder = 3)]
-        [Display(Name = "Gewicht Absorption Count", GroupName = "semaPHorek-Ergaenzungen", Order = 330,
+        [Display(Name = "Gewicht Absorption Count", GroupName = "Zusatz-Treiber", Order = 330,
             Description = "(C) Mehrere absorbierte Level am Extrem (nicht nur das staerkste). 0 = aus (Default). Per-Kerze -> saturiert nicht.")]
         [Range(0, 100)]
         public int RevAcntWeight { get => _revAcntWeight; set { _revAcntWeight = value; RecalculateValues(); } }
 
         [Tab(TabName = "Reversal", TabOrder = 3)]
-        [Display(Name = "Absorption Count: min. Level", GroupName = "semaPHorek-Ergaenzungen", Order = 331,
-            Description = "Ab wie vielen absorbierten Leveln der Treiber feuert (semaPHorek 'X of Y'). Ein Level zaehlt ab 50% des staerksten Level-Deltas. Default 2.")]
+        [Display(Name = "Absorption Count: min. Level", GroupName = "Zusatz-Treiber", Order = 331,
+            Description = "Ab wie vielen absorbierten Leveln der Treiber feuert ('X of Y'-Schwelle). Ein Level zaehlt ab 50% des staerksten Level-Deltas. Default 2.")]
         [Range(1, 10)]
         public int RevAcntMin { get => _revAcntMin; set { _revAcntMin = Math.Max(1, value); RecalculateValues(); } }
 
         [Tab(TabName = "Reversal", TabOrder = 3)]
-        [Display(Name = "Gewicht Volume Power Bar", GroupName = "semaPHorek-Ergaenzungen", Order = 332,
+        [Display(Name = "Gewicht Volume Power Bar", GroupName = "Zusatz-Treiber", Order = 332,
             Description = "(D) Power-Kerze: hohes Volumen + Kerzenkoerper in Umkehr-Richtung. 0 = aus (Default). Per-Kerze -> saturiert nicht.")]
         [Range(0, 100)]
         public int RevPwrWeight { get => _revPwrWeight; set { _revPwrWeight = value; RecalculateValues(); } }
 
         [Tab(TabName = "Reversal", TabOrder = 3)]
-        [Display(Name = "Power Bar: Volumen-Faktor", GroupName = "semaPHorek-Ergaenzungen", Order = 333,
+        [Display(Name = "Power Bar: Volumen-Faktor", GroupName = "Zusatz-Treiber", Order = 333,
             Description = "Kerzen-Volumen >= Faktor * Ø-Bar-Volumen im Fenster, damit es als Power-Kerze zaehlt. Default 1.5.")]
         [Range(1.0, 10.0)]
         public decimal RevPwrVolMult { get => _revPwrVolMult; set { _revPwrVolMult = Math.Max(1.0m, value); RecalculateValues(); } }
 
         [Tab(TabName = "Reversal", TabOrder = 3)]
-        [Display(Name = "Gewicht Kerzen-Delta", GroupName = "semaPHorek-Ergaenzungen", Order = 334,
+        [Display(Name = "Gewicht Kerzen-Delta", GroupName = "Zusatz-Treiber", Order = 334,
             Description = "(E) Netto-Delta der Umkehrkerze in Umkehr-Richtung (Long: Kaeufer-Delta am Tief, Short: Verkaeufer-Delta am Hoch). 0 = aus (Default).")]
         [Range(0, 100)]
         public int RevCdeltaWeight { get => _revCdeltaWeight; set { _revCdeltaWeight = value; RecalculateValues(); } }
 
         [Tab(TabName = "Reversal", TabOrder = 3)]
-        [Display(Name = "Kerzen-Delta: Faktor", GroupName = "semaPHorek-Ergaenzungen", Order = 335,
+        [Display(Name = "Kerzen-Delta: Faktor", GroupName = "Zusatz-Treiber", Order = 335,
             Description = "Kerzen-Delta muss >= Faktor * Ø-|Bar-Delta| sein (in Umkehr-Richtung). Default 0.5.")]
         [Range(0.0, 5.0)]
         public decimal RevCdeltaFactor { get => _revCdeltaFactor; set { _revCdeltaFactor = Math.Max(0m, value); RecalculateValues(); } }
@@ -2536,7 +2536,7 @@ namespace OrderflowSignal
                     // A/B bei aktiver Diagnose IMMER auswerten (Anzeige), aber nur bei Gewicht > 0 werten.
                     bool imb = (_showRevDebug || _revImbWeight > 0) && HasImbStack(c, 1);
                     bool auc = (_showRevDebug || _revAuctionWeight > 0) && AuctionFinishedAtExtreme(c, true);
-                    // semaPHorek-Ergaenzungen (nur werten, wenn Gewicht > 0; Anzeige + Zahl bei Diagnose).
+                    // Zusatz-Treiber (nur werten, wenn Gewicht > 0; Anzeige + Zahl bei Diagnose).
                     int acntN = (_showRevDebug || _revAcntWeight > 0 || _btLog) ? AbsorbedLevelCount(c, 1, signedMld) : 0;
                     bool acnt = (_showRevDebug || _revAcntWeight > 0) && acntN >= _revAcntMin;
                     bool pwr  = (_showRevDebug || _revPwrWeight > 0) && IsPowerBar(c, 1, avgVol);
@@ -2583,7 +2583,7 @@ namespace OrderflowSignal
                     // A/B bei aktiver Diagnose IMMER auswerten (Anzeige), aber nur bei Gewicht > 0 werten.
                     bool imb = (_showRevDebug || _revImbWeight > 0) && HasImbStack(c, -1);
                     bool auc = (_showRevDebug || _revAuctionWeight > 0) && AuctionFinishedAtExtreme(c, false);
-                    // semaPHorek-Ergaenzungen (nur werten, wenn Gewicht > 0; Anzeige + Zahl bei Diagnose).
+                    // Zusatz-Treiber (nur werten, wenn Gewicht > 0; Anzeige + Zahl bei Diagnose).
                     int acntN = (_showRevDebug || _revAcntWeight > 0 || _btLog) ? AbsorbedLevelCount(c, -1, signedMld) : 0;
                     bool acnt = (_showRevDebug || _revAcntWeight > 0) && acntN >= _revAcntMin;
                     bool pwr  = (_showRevDebug || _revPwrWeight > 0) && IsPowerBar(c, -1, avgVol);
@@ -3003,7 +3003,7 @@ namespace OrderflowSignal
                 int drawY = dir > 0 ? y : y - sz.Height;
                 context.DrawString(glyph, _fontMarker, col, x - sz.Width / 2, drawY);
 
-                // Staerke-Zahl (Score) wie semaPHoreks Lichter-Zahl: Long darunter, Short darueber.
+                // Staerke-Zahl (Score): Long darunter, Short darueber.
                 string num = strength.ToString();
                 var nsz = context.MeasureString(num, _font);
                 int numY = dir > 0 ? drawY + sz.Height : drawY - nsz.Height;
