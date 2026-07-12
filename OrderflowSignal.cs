@@ -1780,7 +1780,7 @@ namespace OrderflowSignal
                 int B(bool b) => b ? 1 : 0;
                 string row = string.Join(",",
                     p.Time.ToString("yyyy-MM-dd HH:mm:ss", inv),
-                    (_chartLabel ?? "").Replace(',', ' '),
+                    BuildChartLabel().Trim('(', ')').Replace(',', ' '),
                     p.Dir > 0 ? "L" : "S",
                     p.Entry.ToString(inv),
                     p.Pct.ToString(inv),
