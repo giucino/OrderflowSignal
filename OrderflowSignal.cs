@@ -2875,6 +2875,10 @@ namespace OrderflowSignal
         private int GetRevSignal(int bar)
             => bar >= 0 && bar < _revSignals.Count ? _revSignals[bar] : 0;
 
+        // Oeffentliche Accessoren, damit eine hostende Strategy dieselben Signale lesen kann (Single Source of Truth).
+        public int ReversalSignalAt(int bar) => GetRevSignal(bar);      // signierter Reversal-Score (>0 Long, <0 Short)
+        public int MomentumSignalAt(int bar) => GetSignal(bar);         // signierter Momentum-Signal-Score
+
         // ─────────────────────────────────────────────────────────────────
         //  HUD-HELFER
         // ─────────────────────────────────────────────────────────────────
