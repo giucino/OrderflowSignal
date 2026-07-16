@@ -166,6 +166,9 @@ namespace OrderflowSignal
         private readonly List<(decimal Price, string Label)> _klLevels = new();
         private DateTime _klLastRead = DateTime.MinValue;
 
+        // ── Auto-Bridge: Signal pro geschlossenem Bar in Datei -> OrderflowAuto-Strategie liest es ──
+        private bool _bridgeExport = false;
+
         // ── Backtest-Log (CSV): jede Umkehr + auto-gemessener Ausgang (MFE/MAE/Net) ──
         private bool _btLog = false;
         private int _btHorizon = 15;   // geschlossene Bars fuer die Ausgangsmessung
@@ -718,6 +721,12 @@ namespace OrderflowSignal
         [Range(0, 50)]
         [VisibleWhen(nameof(KlConfluence), true)]
         public int KlTolTicks { get => _klTolTicks; set { _klTolTicks = Math.Max(0, value); RedrawChart(); } }
+
+        // ── Auto-Bridge ────────────────────────────────────────────────────
+        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Display(Name = "Signal-Export (Auto-Bridge)", GroupName = "Auto-Bridge", Order = 370,
+            Description = "An = pro geschlossenem LIVE-Bar wird das Signal (Momentum + Reversal) nach %APPDATA%\\ATAS\\ofs_signals\\<Instrument>.txt geschrieben. Die OrderflowAuto-Strategie liest genau DIESES getunte Signal (kein Hosting, keine Divergenz). Reine Ausgabe, aendert die Signal-Logik nicht.")]
+        public bool BridgeExport { get => _bridgeExport; set { _bridgeExport = value; } }
 
         // ── Backtest-Log ───────────────────────────────────────────────────
         [Tab(TabName = "Reversal", TabOrder = 3)]
@@ -1829,6 +1838,28 @@ namespace OrderflowSignal
 
             // Imbalance-Zonen: erst offene Zonen gegen diesen Bar pruefen, dann neue erkennen.
             ProcessImbZones(bar, c, detectNew: true);
+
+            // Auto-Bridge: getuntes Signal dieses Bars fuer die Strategie rausschreiben (nur live).
+            if (_bridgeExport && _histDone)
+                WriteBridge(bar, c, GetSignal(bar), rev);
+        }
+
+        // Schreibt eine Zeile "unixMillis\tmomentum\treversal" (letzter geschlossener Bar, ueberschreibend)
+        // nach %APPDATA%\ATAS\ofs_signals\<Instrument>.txt. Die OrderflowAuto-Strategie liest das.
+        private void WriteBridge(int bar, IndicatorCandle c, int mom, int rev)
+        {
+            try
+            {
+                string dir = System.IO.Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ATAS", "ofs_signals");
+                System.IO.Directory.CreateDirectory(dir);
+                string instr = InstrumentInfo?.Instrument ?? "instr";
+                foreach (var ch in System.IO.Path.GetInvalidFileNameChars()) instr = instr.Replace(ch, '_');
+                string line = string.Format(System.Globalization.CultureInfo.InvariantCulture,
+                    "{0}\t{1}\t{2}", c.LastTime.Ticks, mom, rev);
+                System.IO.File.WriteAllText(System.IO.Path.Combine(dir, instr + ".txt"), line);
+            }
+            catch { /* Datei-IO darf nie die Berechnung stoppen */ }
         }
 
         // Loest einen ATAS-Alarm aus (geht automatisch durch die konfigurierte
