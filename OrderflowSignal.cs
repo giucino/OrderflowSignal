@@ -189,6 +189,7 @@ namespace OrderflowSignal
         private int _sessAsia = 2, _sessLon = 8, _sessNy = 15, _sessNyEnd = 23;   // lokale Session-Grenzen (Std)
         private static readonly string[] SessNames = { "Asia  ", "London", "NY    " };
         private int _posBeTrigger = 0;   // SL auf Entry (Breakeven), sobald +X Ticks im Plus (0 = aus)
+        private bool _posLikeAuto = false;   // Entry auf Folgebar-Open (wie die Auto-Strategie), statt Signal-Bar-Close
         // First-Touch-Auswertung je Session (0=Asia, 1=London, 2=NY). MaxFav/BeArmed = laufender Zustand.
         private readonly List<(int Bar, int Dir, int Sess, decimal Entry, decimal Tp, decimal Sl, decimal MaxFav, bool BeArmed)> _posPend = new();
         private readonly Dictionary<int, int> _posOutcome = new();   // bar -> 1 Win, -1 Loss, -2 ambivalent, 2 Breakeven, 0 offen
@@ -772,6 +773,12 @@ namespace OrderflowSignal
         [Range(0, 500)]
         [VisibleWhen(nameof(PosTool), true)]
         public int PosBeTrigger { get => _posBeTrigger; set { _posBeTrigger = Math.Max(0, value); RecalculateValues(); } }
+
+        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Display(Name = "Ausgang wie Auto-Strategie", GroupName = "Position-Tool", Order = 403,
+            Description = "AN = Entry auf dem OPEN des FOLGEBARS (so wie die OrderflowAuto-Strategie einsteigt), statt auf dem Close des Signal-Bars. Dann matchen SL/TP-Level und Ausgaenge die reale Ausfuehrung. Fuer exakte Deckung im Position-Tool denselben Breakeven-Trigger wie in der Strategie setzen.")]
+        [VisibleWhen(nameof(PosTool), true)]
+        public bool PosLikeAuto { get => _posLikeAuto; set { _posLikeAuto = value; RecalculateValues(); } }
 
         [Tab(TabName = "Reversal", TabOrder = 3)]
         [Display(Name = "Session-Zeitzone (Std von UTC)", GroupName = "Position-Tool", Order = 397,
@@ -1888,7 +1895,14 @@ namespace OrderflowSignal
             if (tick <= 0m) return;
             int dir = Math.Sign(rev);
             int sess = SessionOf(c);
+            // "Ausgang wie Auto-Strategie": Entry auf dem OPEN des Folgebars (die Strategie steigt
+            // erst nach Signal-Bar-Schluss ein). Folgebar existiert hier (= CurrentBar-1). Fallback Close.
             decimal entry = c.Close;
+            if (_posLikeAuto)
+            {
+                var cn = GetCandle(bar + 1);
+                if (cn != null) entry = cn.Open;
+            }
             decimal tp = dir > 0 ? entry + tick * _posTpTicks : entry - tick * _posTpTicks;
             decimal sl = dir > 0 ? entry - tick * _posSlTicks : entry + tick * _posSlTicks;
             _posPend.Add((bar, dir, sess, entry, tp, sl, 0m, false));
