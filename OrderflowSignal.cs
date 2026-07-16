@@ -1863,7 +1863,7 @@ namespace OrderflowSignal
                 string instr = InstrumentInfo?.Instrument ?? "instr";
                 foreach (var ch in System.IO.Path.GetInvalidFileNameChars()) instr = instr.Replace(ch, '_');
                 string line = string.Format(System.Globalization.CultureInfo.InvariantCulture,
-                    "{0}\t{1}\t{2}", c.LastTime.Ticks, mom, rev);
+                    "{0}\t{1}\t{2}\t{3}", c.LastTime.Ticks, mom, rev, c.Close);   // 4. Feld = Signalpreis
                 System.IO.File.WriteAllText(System.IO.Path.Combine(dir, instr + ".txt"), line);
             }
             catch { /* Datei-IO darf nie die Berechnung stoppen */ }
