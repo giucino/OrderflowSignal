@@ -202,6 +202,13 @@ namespace OrderflowSignal
         private int _posStreakN = -1;
         private decimal _posStreakCost = -1m;   // Cache-Invalidierung bei Kosten-Aenderung
 
+        // ── Repaint-freie Folgekerzen-Bestaetigung: Reversal erst emittieren, wenn die
+        //    Folgekerze VOLL geschlossen ist (live = reload = backtest, keine Zukunftsschau). ──
+        private int _revPendBar = -1;   // Bar mit noch unbestaetigter Reversal-Rohkandidatin
+        private int _revPendVal = 0;    // signierter Roh-Score der Kandidatin
+        private RevDbg _revPendDbg;     // Treiber-Snapshot der Kandidatin
+        private int _freshRev = 0;      // in DIESER ProcessClosedBar emittierte Reversal (fuer Bridge)
+
         // ── ALARM (Telegram via ATAS-Alarme) ───────────────────────────────
         // Latch: erst nach dem Historien-Nachladen alarmieren -> kein Spam alter Umkehren.
         private bool _histDone;
@@ -1759,6 +1766,7 @@ namespace OrderflowSignal
             _revSignals.Clear();
             _lastSignalBar = -1;
             _lastRevBar = -1;
+            _revPendBar = -1; _revPendVal = 0; _freshRev = 0;
             _hoverRevBar = -1;
             _revDbgByBar.Clear();
             _btPending.Clear();
@@ -1823,32 +1831,57 @@ namespace OrderflowSignal
                 if (_posSource == PosSource.Signal) AddPosPending(bar, c, GetSignal(bar));   // Position-Tool: Momentum-Signal
             }
 
-            int rev = RevEvaluate(bar, c, signedMld, _cumDeltaRun);
-            if (rev != 0 && _revConfirm && !RevConfirmed(bar, Math.Sign(rev)))
-                rev = 0;   // 2-Kerzen-Bestaetigung fehlt
-            if (rev != 0 && _lastRevBar >= 0 && _signalCooldownBars > 0
-                && (bar - _lastRevBar) <= _signalCooldownBars)
-                rev = 0;
-            SetRevSignal(bar, rev);
-            if (rev != 0)
-            {
-                _lastRevBar = bar;
-                // Treiber-Aufschluesselung der ANGEZEIGTEN Raute fuer die Hover-Diagnose.
-                _revDbgByBar[bar] = _revCand;
-                AddBacktestPending(c, rev);   // Backtest-Log: neue Umkehr aufnehmen (Ausgang folgt)
-                if (_posSource == PosSource.Reversal) AddPosPending(bar, c, rev);   // Position-Tool: Reversal
-            }
+            int rawRev = RevEvaluate(bar, c, signedMld, _cumDeltaRun);   // setzt _revCand
+            RevDbg rawDbg = _revCand;
+            _freshRev = 0;   // wird von EmitReversal gesetzt, wenn in diesem Bar eine Umkehr emittiert wird
 
-            // Alarm (Telegram via ATAS) — NUR live (nach Historien-Nachladen), nicht rueckwirkend.
-            if (rev != 0 && _histDone && _alertOnReversal)
-                FireReversalAlert(bar, rev, c);
+            if (_revConfirm)
+            {
+                // REPAINT-FREI: die Folgekerze der Vorbar-Kandidatin ist JETZT (bar) voll geschlossen.
+                if (_revPendBar == bar - 1 && _revPendVal != 0)
+                {
+                    if (RevConfirmed(bar - 1, Math.Sign(_revPendVal)))
+                        EmitReversal(bar - 1, _revPendVal, _revPendDbg);
+                    else
+                        SetRevSignal(bar - 1, 0);   // Bestaetigung endgueltig gescheitert
+                }
+                // aktuelle Rohkandidatin fuer die naechste Runde vormerken; `bar` selbst noch offen.
+                _revPendBar = bar; _revPendVal = rawRev; _revPendDbg = rawDbg;
+                SetRevSignal(bar, 0);
+            }
+            else
+            {
+                // ohne Bestaetigung: sofort emittieren (nutzt nur <=bar -> ebenfalls deterministisch).
+                EmitReversal(bar, rawRev, rawDbg);
+            }
 
             // Imbalance-Zonen: erst offene Zonen gegen diesen Bar pruefen, dann neue erkennen.
             ProcessImbZones(bar, c, detectNew: true);
 
-            // Auto-Bridge: getuntes Signal dieses Bars fuer die Strategie rausschreiben (nur live).
+            // Auto-Bridge: die in DIESEM Bar frisch (bestaetigt) emittierte Umkehr rausschreiben (nur live).
             if (_bridgeExport && _histDone)
-                WriteBridge(bar, c, GetSignal(bar), rev);
+                WriteBridge(bar, c, GetSignal(bar), _freshRev);
+        }
+
+        // Emittiert eine (ggf. bestaetigte) Umkehr fuer Bar b: Cooldown, Marker, Backtest, Position-Tool,
+        // Alarm, und merkt sie fuer die Bridge (_freshRev). Zentral -> confirm/no-confirm nutzen denselben Pfad.
+        private void EmitReversal(int b, int rev, RevDbg dbg)
+        {
+            if (rev != 0 && _lastRevBar >= 0 && _signalCooldownBars > 0 && (b - _lastRevBar) <= _signalCooldownBars)
+                rev = 0;   // Cooldown
+            SetRevSignal(b, rev);
+            if (rev == 0)
+                return;
+            _lastRevBar = b;
+            _revDbgByBar[b] = dbg;   // Treiber-Aufschluesselung fuer die Hover-Diagnose
+            _freshRev = rev;         // fuer die Bridge in diesem Bar
+            var cb = GetCandle(b);
+            if (cb != null)
+            {
+                AddBacktestPending(cb, rev);
+                if (_posSource == PosSource.Reversal) AddPosPending(b, cb, rev);
+                if (_histDone && _alertOnReversal) FireReversalAlert(b, rev, cb);
+            }
         }
 
         // Schreibt eine Zeile "unixMillis\tmomentum\treversal" (letzter geschlossener Bar, ueberschreibend)
