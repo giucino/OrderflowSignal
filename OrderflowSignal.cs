@@ -190,6 +190,7 @@ namespace OrderflowSignal
         private static readonly string[] SessNames = { "Asia  ", "London", "NY    " };
         private int _posBeTrigger = 0;   // SL auf Entry (Breakeven), sobald +X Ticks im Plus (0 = aus)
         private bool _posLikeAuto = false;   // Entry auf Folgebar-Open (wie die Auto-Strategie), statt Signal-Bar-Close
+        private bool _posEntryAfterConfirm = false;   // Entry erst NACH der Bestaetigungskerze (ehrlich, kein Look-ahead)
         // First-Touch-Auswertung je Session (0=Asia, 1=London, 2=NY). MaxFav/BeArmed = laufender Zustand.
         private readonly List<(int Bar, int Dir, int Sess, decimal Entry, decimal Tp, decimal Sl, decimal MaxFav, bool BeArmed)> _posPend = new();
         private readonly Dictionary<int, int> _posOutcome = new();   // bar -> 1 Win, -1 Loss, -2 ambivalent, 2 Breakeven, 0 offen
@@ -786,6 +787,12 @@ namespace OrderflowSignal
             Description = "AN = Entry auf dem OPEN des Folgebars (N+1) statt auf dem Close des Signal-Bars (N). Fuer exakte Deckung denselben Breakeven-Trigger wie in der Strategie setzen.")]
         [VisibleWhen(nameof(PosTool), true)]
         public bool PosLikeAuto { get => _posLikeAuto; set { _posLikeAuto = value; RecalculateValues(); } }
+
+        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Display(Name = "Entry erst nach Bestaetigung (ehrlich)", GroupName = "Position-Tool", Order = 404,
+            Description = "Nur wirksam wenn die Folgekerzen-Bestaetigung AN ist. AUS = Entry auf Close(N) des Signal-Bars (gewohnte Ansicht) - das ist Look-ahead, weil das bestaetigte Signal dort noch gar nicht existierte. AN = Entry auf Close(N+1) bzw. Open(N+2) - die frueheste Stelle, an der du real einsteigen konntest. Zum Vergleichen umschalten: die Differenz ist genau das, was die Bestaetigung dich an Entry-Preis kostet.")]
+        [VisibleWhen(nameof(PosTool), true)]
+        public bool PosEntryAfterConfirm { get => _posEntryAfterConfirm; set { _posEntryAfterConfirm = value; RecalculateValues(); } }
 
         [Tab(TabName = "Reversal", TabOrder = 3)]
         [Display(Name = "Session-Zeitzone (Std von UTC)", GroupName = "Position-Tool", Order = 397,
@@ -1937,13 +1944,21 @@ namespace OrderflowSignal
         }
 
         // EINZIGE Quelle fuer den Position-Tool-Entry (Rechnung UND Zeichnung) -> kein Drift.
-        // Entry = Close(N) des Signal-Bars; mit "Ausgang wie Auto-Strategie" = Open(N+1).
+        // Default: Entry = Close(N) des Signal-Bars (bzw. Open(N+1) mit "Ausgang wie Auto-Strategie").
+        // Mit "Entry erst nach Bestaetigung" + aktiver Bestaetigung: Close(N+1) bzw. Open(N+2)
+        // -> fruehester Zeitpunkt, an dem das bestaetigte Signal real existierte (kein Look-ahead).
         private decimal PosEntryPrice(int bar, IndicatorCandle c)
         {
             decimal entry = c.Close;
+            bool wait = _posEntryAfterConfirm && _revConfirm;
+            if (wait)
+            {
+                var cc = GetCandle(bar + 1);
+                if (cc != null) entry = cc.Close;
+            }
             if (_posLikeAuto)
             {
-                var cn = GetCandle(bar + 1);
+                var cn = GetCandle(bar + (wait ? 2 : 1));
                 if (cn != null) entry = cn.Open;
             }
             return entry;
