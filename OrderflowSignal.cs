@@ -132,6 +132,8 @@ namespace OrderflowSignal
         // Zusatz-Treiber (alle Default-Gewicht 0 = neutral, aendern nichts):
         private int _revAcntWeight = 0;         // (C) Absorption Count: mehrere absorbierte Level
         private int _revAcntMin = 2;            // min. Anzahl absorbierter Level ("X of Y")
+        private bool _revFilterAcnt = false;    // HARTER Filter: nur Reversals mit AC# >= _revAcntMin
+        private bool _revFilterKl = false;      // HARTER Filter: nur Reversals mit KeyLevel-Konfluenz
         private decimal _revAcntFrac = 0.5m;    // Level zaehlt ab Frac * staerkstem Level-Delta
         private int _revPwrWeight = 0;          // (D) Volume Power Bar: Power-Kerze in Umkehr-Richtung
         private decimal _revPwrVolMult = 1.5m;  // Volumen >= Mult * Ø-Bar-Volumen im Fenster
@@ -641,6 +643,16 @@ namespace OrderflowSignal
             Description = "Ab wie vielen absorbierten Leveln der Treiber feuert ('X of Y'-Schwelle). Ein Level zaehlt ab 50% des staerksten Level-Deltas. Default 2.")]
         [Range(1, 10)]
         public int RevAcntMin { get => _revAcntMin; set { _revAcntMin = Math.Max(1, value); RecalculateValues(); } }
+
+        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Display(Name = "FILTER: nur mit AC# >= min", GroupName = "Zusatz-Treiber", Order = 350,
+            Description = "HARTER Filter (unabhaengig vom Gewicht): laesst nur Umkehren durch, die mindestens 'min. Level' absorbierte Level haben. Zum sauberen Testen der AC#-Hypothese. Achtung: reduziert die Signalmenge stark.")]
+        public bool RevFilterAcnt { get => _revFilterAcnt; set { _revFilterAcnt = value; RecalculateValues(); } }
+
+        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Display(Name = "FILTER: nur mit KL-Konfluenz", GroupName = "Zusatz-Treiber", Order = 351,
+            Description = "HARTER Filter: laesst nur Umkehren durch, deren Extrem nahe an einem KeyLevel liegt (Toleranz = KL-Konfluenz-Einstellung). Braucht den Level-Export im KeyLevels-Indikator. Zum sauberen Testen der KL-Hypothese.")]
+        public bool RevFilterKl { get => _revFilterKl; set { _revFilterKl = value; RecalculateValues(); } }
 
         [Tab(TabName = "Reversal", TabOrder = 3)]
         [Display(Name = "Gewicht Volume Power Bar", GroupName = "Zusatz-Treiber", Order = 332,
@@ -1840,6 +1852,8 @@ namespace OrderflowSignal
 
             int rawRev = RevEvaluate(bar, c, signedMld, _cumDeltaRun);   // setzt _revCand
             RevDbg rawDbg = _revCand;
+            if (rawRev != 0 && !PassesRevFilters(c, rawRev, rawDbg))
+                rawRev = 0;   // harte Test-Filter (AC# / KL-Konfluenz)
             _freshRev = 0;   // wird von EmitReversal gesetzt, wenn in diesem Bar eine Umkehr emittiert wird
 
             if (_revConfirm)
@@ -1868,6 +1882,21 @@ namespace OrderflowSignal
             // Auto-Bridge: die in DIESEM Bar frisch (bestaetigt) emittierte Umkehr rausschreiben (nur live).
             if (_bridgeExport && _histDone)
                 WriteBridge(bar, c, GetSignal(bar), _freshRev);
+        }
+
+        // Harte Test-Filter auf die Roh-Kandidatin. Beide nutzen nur Daten des Signal-Bars
+        // (kein Look-ahead) -> Ergebnis bleibt ehrlich vergleichbar.
+        private bool PassesRevFilters(IndicatorCandle c, int rev, RevDbg dbg)
+        {
+            if (_revFilterAcnt && dbg.AcnN < _revAcntMin)
+                return false;
+            if (_revFilterKl)
+            {
+                decimal extreme = rev > 0 ? c.Low : c.High;   // Long-Umkehr am Tief, Short am Hoch
+                if (!NearestKeyLevel(extreme).HasValue)
+                    return false;
+            }
+            return true;
         }
 
         // Emittiert eine (ggf. bestaetigte) Umkehr fuer Bar b: Cooldown, Marker, Backtest, Position-Tool,
@@ -2813,7 +2842,7 @@ namespace OrderflowSignal
                     bool imb = (_showRevDebug || _revImbWeight > 0) && HasImbStack(c, 1);
                     bool auc = (_showRevDebug || _revAuctionWeight > 0) && AuctionFinishedAtExtreme(c, true);
                     // Zusatz-Treiber (nur werten, wenn Gewicht > 0; Anzeige + Zahl bei Diagnose).
-                    int acntN = (_showRevDebug || _revAcntWeight > 0 || _btLog) ? AbsorbedLevelCount(c, 1, signedMld) : 0;
+                    int acntN = (_showRevDebug || _revAcntWeight > 0 || _btLog || _revFilterAcnt) ? AbsorbedLevelCount(c, 1, signedMld) : 0;
                     bool acnt = (_showRevDebug || _revAcntWeight > 0) && acntN >= _revAcntMin;
                     bool pwr  = (_showRevDebug || _revPwrWeight > 0) && IsPowerBar(c, 1, avgVol);
                     bool cdlt = (_showRevDebug || _revCdeltaWeight > 0) && c.Delta >= _revCdeltaFactor * avgAbsDelta;
@@ -2860,7 +2889,7 @@ namespace OrderflowSignal
                     bool imb = (_showRevDebug || _revImbWeight > 0) && HasImbStack(c, -1);
                     bool auc = (_showRevDebug || _revAuctionWeight > 0) && AuctionFinishedAtExtreme(c, false);
                     // Zusatz-Treiber (nur werten, wenn Gewicht > 0; Anzeige + Zahl bei Diagnose).
-                    int acntN = (_showRevDebug || _revAcntWeight > 0 || _btLog) ? AbsorbedLevelCount(c, -1, signedMld) : 0;
+                    int acntN = (_showRevDebug || _revAcntWeight > 0 || _btLog || _revFilterAcnt) ? AbsorbedLevelCount(c, -1, signedMld) : 0;
                     bool acnt = (_showRevDebug || _revAcntWeight > 0) && acntN >= _revAcntMin;
                     bool pwr  = (_showRevDebug || _revPwrWeight > 0) && IsPowerBar(c, -1, avgVol);
                     bool cdlt = (_showRevDebug || _revCdeltaWeight > 0) && c.Delta <= -_revCdeltaFactor * avgAbsDelta;
