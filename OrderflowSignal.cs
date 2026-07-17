@@ -783,7 +783,7 @@ namespace OrderflowSignal
 
         [Tab(TabName = "Reversal", TabOrder = 3)]
         [Display(Name = "Ausgang wie Auto-Strategie", GroupName = "Position-Tool", Order = 403,
-            Description = "AN = Entry auf dem OPEN des FOLGEBARS (so wie die OrderflowAuto-Strategie einsteigt), statt auf dem Close des Signal-Bars. Dann matchen SL/TP-Level und Ausgaenge die reale Ausfuehrung. Fuer exakte Deckung im Position-Tool denselben Breakeven-Trigger wie in der Strategie setzen.")]
+            Description = "AN = Entry auf dem OPEN des Bars, in dem die Strategie REAL einsteigt: bei aktiver Folgekerzen-Bestaetigung N+2, sonst N+1. Ohne diesen Toggle wird der Entry bereits am fruehesten bekannten Close gesetzt. So oder so gilt jetzt: KEIN Look-ahead - bei aktiver Bestaetigung ist das Signal erst am Schluss von N+1 bekannt und der Entry liegt nie davor. Fuer exakte Deckung denselben Breakeven-Trigger wie in der Strategie setzen.")]
         [VisibleWhen(nameof(PosTool), true)]
         public bool PosLikeAuto { get => _posLikeAuto; set { _posLikeAuto = value; RecalculateValues(); } }
 
@@ -1878,7 +1878,7 @@ namespace OrderflowSignal
             var cb = GetCandle(b);
             if (cb != null)
             {
-                AddBacktestPending(cb, rev);
+                AddBacktestPending(b, cb, rev, dbg);
                 if (_posSource == PosSource.Reversal) AddPosPending(b, cb, rev);
                 if (_histDone && _alertOnReversal) FireReversalAlert(b, rev, cb);
             }
@@ -1928,12 +1928,19 @@ namespace OrderflowSignal
             if (tick <= 0m) return;
             int dir = Math.Sign(rev);
             int sess = SessionOf(c);
-            // "Ausgang wie Auto-Strategie": Entry auf dem OPEN des Folgebars (die Strategie steigt
-            // erst nach Signal-Bar-Schluss ein). Folgebar existiert hier (= CurrentBar-1). Fallback Close.
+            // Entry NUR zu einem Zeitpunkt, an dem die Info real existiert (kein Look-ahead):
+            // - Bestaetigung AN: das Signal ist erst am SCHLUSS der Folgekerze (N+1) bekannt
+            //   -> fruehester realistischer Entry = Close(N+1) bzw. Open(N+2).
+            // - Bestaetigung AUS: Signal am Schluss von N bekannt -> Close(N) bzw. Open(N+1).
             decimal entry = c.Close;
+            if (_revConfirm)
+            {
+                var cc = GetCandle(bar + 1);
+                if (cc != null) entry = cc.Close;   // Bestaetigungskerze schliesst = Info da
+            }
             if (_posLikeAuto)
             {
-                var cn = GetCandle(bar + 1);
+                var cn = GetCandle(bar + (_revConfirm ? 2 : 1));   // so steigt die Strategie ein
                 if (cn != null) entry = cn.Open;
             }
             decimal tp = dir > 0 ? entry + tick * _posTpTicks : entry - tick * _posTpTicks;
@@ -2018,16 +2025,23 @@ namespace OrderflowSignal
         }
 
         // Backtest-Log: neue Umkehr als offenen Eintrag aufnehmen (Treiber-Snapshot + Entry).
-        private void AddBacktestPending(IndicatorCandle c, int rev)
+        private void AddBacktestPending(int bar, IndicatorCandle c, int rev, RevDbg dbg)
         {
             if (!_btLog) return;
             int dir = Math.Sign(rev);
             decimal extreme = dir > 0 ? c.Low : c.High;
+            // Kein Look-ahead: bei aktiver Bestaetigung ist das Signal erst am Schluss von N+1 bekannt.
+            decimal entry = c.Close;
+            if (_revConfirm)
+            {
+                var cc = GetCandle(bar + 1);
+                if (cc != null) entry = cc.Close;
+            }
             _btPending.Add(new BtPending
             {
                 Dir = dir, Age = 0, Pct = Math.Abs(rev),
-                Entry = c.Close, Mfe = 0, Mae = 0, Time = c.LastTime,
-                D = _revCand, Kl = NearestKeyLevel(extreme).HasValue
+                Entry = entry, Mfe = 0, Mae = 0, Time = c.LastTime,
+                D = dbg, Kl = NearestKeyLevel(extreme).HasValue   // dbg des EMITTIERTEN Bars, nicht _revCand
             });
         }
 
