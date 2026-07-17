@@ -783,7 +783,7 @@ namespace OrderflowSignal
 
         [Tab(TabName = "Reversal", TabOrder = 3)]
         [Display(Name = "Ausgang wie Auto-Strategie", GroupName = "Position-Tool", Order = 403,
-            Description = "AN = Entry auf dem OPEN des Bars, in dem die Strategie REAL einsteigt: bei aktiver Folgekerzen-Bestaetigung N+2, sonst N+1. Ohne diesen Toggle wird der Entry bereits am fruehesten bekannten Close gesetzt. So oder so gilt jetzt: KEIN Look-ahead - bei aktiver Bestaetigung ist das Signal erst am Schluss von N+1 bekannt und der Entry liegt nie davor. Fuer exakte Deckung denselben Breakeven-Trigger wie in der Strategie setzen.")]
+            Description = "AN = Entry auf dem OPEN des Folgebars (N+1) statt auf dem Close des Signal-Bars (N). Fuer exakte Deckung denselben Breakeven-Trigger wie in der Strategie setzen.")]
         [VisibleWhen(nameof(PosTool), true)]
         public bool PosLikeAuto { get => _posLikeAuto; set { _posLikeAuto = value; RecalculateValues(); } }
 
@@ -1936,27 +1936,21 @@ namespace OrderflowSignal
             if (sess >= 0) _psOpen[sess]++;
         }
 
-        // EINZIGE Quelle fuer den Position-Tool-Entry (Rechnung UND Zeichnung) -> kein Drift, kein Look-ahead.
-        // Bestaetigung AN: Signal ist erst am SCHLUSS von N+1 bekannt -> Close(N+1) bzw. Open(N+2).
-        // Bestaetigung AUS: Signal am Schluss von N bekannt        -> Close(N)   bzw. Open(N+1).
+        // EINZIGE Quelle fuer den Position-Tool-Entry (Rechnung UND Zeichnung) -> kein Drift.
+        // Entry = Close(N) des Signal-Bars; mit "Ausgang wie Auto-Strategie" = Open(N+1).
         private decimal PosEntryPrice(int bar, IndicatorCandle c)
         {
             decimal entry = c.Close;
-            if (_revConfirm)
-            {
-                var cc = GetCandle(bar + 1);
-                if (cc != null) entry = cc.Close;
-            }
             if (_posLikeAuto)
             {
-                var cn = GetCandle(bar + (_revConfirm ? 2 : 1));
+                var cn = GetCandle(bar + 1);
                 if (cn != null) entry = cn.Open;
             }
             return entry;
         }
 
-        // Bar, in dem der Trade real beginnt (Ende N+1 = Anfang N+2 bei Bestaetigung, sonst Ende N).
-        private int PosEntryBar(int bar) => bar + (_revConfirm ? 2 : 1);
+        // Bar, an dem die Box gezeichnet wird = Signal-Bar.
+        private int PosEntryBar(int bar) => bar;
 
         // Session anhand der (offset-korrigierten) Kerzenzeit: 0=Asia, 1=London, 2=NY, -1=ausserhalb.
         private int SessionOf(IndicatorCandle c)
@@ -2038,13 +2032,7 @@ namespace OrderflowSignal
             if (!_btLog) return;
             int dir = Math.Sign(rev);
             decimal extreme = dir > 0 ? c.Low : c.High;
-            // Kein Look-ahead: bei aktiver Bestaetigung ist das Signal erst am Schluss von N+1 bekannt.
             decimal entry = c.Close;
-            if (_revConfirm)
-            {
-                var cc = GetCandle(bar + 1);
-                if (cc != null) entry = cc.Close;
-            }
             _btPending.Add(new BtPending
             {
                 Dir = dir, Age = 0, Pct = Math.Abs(rev),
