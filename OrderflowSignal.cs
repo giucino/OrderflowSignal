@@ -170,6 +170,7 @@ namespace OrderflowSignal
 
         // ── Auto-Bridge: Signal pro geschlossenem Bar in Datei -> OrderflowAuto-Strategie liest es ──
         private bool _bridgeExport = false;
+        private string _bridgeKey = "";   // optionaler Zusatz im Dateinamen -> mehrere Timeframes je Instrument
 
         // ── Backtest-Log (CSV): jede Umkehr + auto-gemessener Ausgang (MFE/MAE/Net) ──
         private bool _btLog = false;
@@ -748,6 +749,12 @@ namespace OrderflowSignal
         [Display(Name = "Signal-Export (Auto-Bridge)", GroupName = "Auto-Bridge", Order = 370,
             Description = "An = pro geschlossenem LIVE-Bar wird das Signal (Momentum + Reversal) nach %APPDATA%\\ATAS\\ofs_signals\\<Instrument>.txt geschrieben. Die OrderflowAuto-Strategie liest genau DIESES getunte Signal (kein Hosting, keine Divergenz). Reine Ausgabe, aendert die Signal-Logik nicht.")]
         public bool BridgeExport { get => _bridgeExport; set { _bridgeExport = value; } }
+
+        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Display(Name = "Bridge-Kennung (optional)", GroupName = "Auto-Bridge", Order = 371,
+            Description = "PFLICHT, wenn mehrere Charts DESSELBEN Instruments exportieren (z.B. Renko24 und 900T auf NQ) - sonst ueberschreiben sie sich gegenseitig! Wird an den Dateinamen gehaengt: Kennung 'renko24' -> ofs_signals\\NQ_renko24.txt. In der Strategie dann bei 'Signal von Instrument' exakt 'NQ_renko24' eintragen. Leer = nur <Instrument>.txt.")]
+        [VisibleWhen(nameof(BridgeExport), true)]
+        public string BridgeKey { get => _bridgeKey; set { _bridgeKey = value ?? ""; } }
 
         // ── Backtest-Log ───────────────────────────────────────────────────
         [Tab(TabName = "Reversal", TabOrder = 3)]
@@ -1930,6 +1937,7 @@ namespace OrderflowSignal
                     Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ATAS", "ofs_signals");
                 System.IO.Directory.CreateDirectory(dir);
                 string instr = InstrumentInfo?.Instrument ?? "instr";
+                if (_bridgeKey.Trim().Length > 0) instr += "_" + _bridgeKey.Trim();   // mehrere Timeframes je Instrument trennen
                 foreach (var ch in System.IO.Path.GetInvalidFileNameChars()) instr = instr.Replace(ch, '_');
                 string line = string.Format(System.Globalization.CultureInfo.InvariantCulture,
                     "{0}\t{1}\t{2}\t{3}", c.LastTime.Ticks, mom, rev, c.Close);   // 4. Feld = Signalpreis
