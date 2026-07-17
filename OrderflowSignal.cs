@@ -1928,27 +1928,35 @@ namespace OrderflowSignal
             if (tick <= 0m) return;
             int dir = Math.Sign(rev);
             int sess = SessionOf(c);
-            // Entry NUR zu einem Zeitpunkt, an dem die Info real existiert (kein Look-ahead):
-            // - Bestaetigung AN: das Signal ist erst am SCHLUSS der Folgekerze (N+1) bekannt
-            //   -> fruehester realistischer Entry = Close(N+1) bzw. Open(N+2).
-            // - Bestaetigung AUS: Signal am Schluss von N bekannt -> Close(N) bzw. Open(N+1).
-            decimal entry = c.Close;
-            if (_revConfirm)
-            {
-                var cc = GetCandle(bar + 1);
-                if (cc != null) entry = cc.Close;   // Bestaetigungskerze schliesst = Info da
-            }
-            if (_posLikeAuto)
-            {
-                var cn = GetCandle(bar + (_revConfirm ? 2 : 1));   // so steigt die Strategie ein
-                if (cn != null) entry = cn.Open;
-            }
+            decimal entry = PosEntryPrice(bar, c);   // gemeinsame Quelle mit der Zeichnung
             decimal tp = dir > 0 ? entry + tick * _posTpTicks : entry - tick * _posTpTicks;
             decimal sl = dir > 0 ? entry - tick * _posSlTicks : entry + tick * _posSlTicks;
             _posPend.Add((bar, dir, sess, entry, tp, sl, 0m, false));
             _posOutcome[bar] = 0;   // offen bis aufgeloest
             if (sess >= 0) _psOpen[sess]++;
         }
+
+        // EINZIGE Quelle fuer den Position-Tool-Entry (Rechnung UND Zeichnung) -> kein Drift, kein Look-ahead.
+        // Bestaetigung AN: Signal ist erst am SCHLUSS von N+1 bekannt -> Close(N+1) bzw. Open(N+2).
+        // Bestaetigung AUS: Signal am Schluss von N bekannt        -> Close(N)   bzw. Open(N+1).
+        private decimal PosEntryPrice(int bar, IndicatorCandle c)
+        {
+            decimal entry = c.Close;
+            if (_revConfirm)
+            {
+                var cc = GetCandle(bar + 1);
+                if (cc != null) entry = cc.Close;
+            }
+            if (_posLikeAuto)
+            {
+                var cn = GetCandle(bar + (_revConfirm ? 2 : 1));
+                if (cn != null) entry = cn.Open;
+            }
+            return entry;
+        }
+
+        // Bar, in dem der Trade real beginnt (Ende N+1 = Anfang N+2 bei Bestaetigung, sonst Ende N).
+        private int PosEntryBar(int bar) => bar + (_revConfirm ? 2 : 1);
 
         // Session anhand der (offset-korrigierten) Kerzenzeit: 0=Asia, 1=London, 2=NY, -1=ausserhalb.
         private int SessionOf(IndicatorCandle c)
@@ -3462,15 +3470,16 @@ namespace OrderflowSignal
                 if (c == null)
                     continue;
                 int dir = Math.Sign(v);
-                decimal entry = c.Close;
+                decimal entry = PosEntryPrice(b, c);   // identisch zur Rechnung (kein Look-ahead)
                 decimal sl = dir > 0 ? entry - slD : entry + slD;
                 decimal tp = dir > 0 ? entry + tpD : entry - tpD;
+                int eb = PosEntryBar(b);               // Box beginnt, wo der Trade real startet
 
                 int x1, xe, yE, ySl, yTp;
                 try
                 {
-                    x1 = cont.GetXByBar(b, false);
-                    xe = cont.GetXByBar(b + _posBoxBars, false);
+                    x1 = cont.GetXByBar(eb, false);
+                    xe = cont.GetXByBar(eb + _posBoxBars, false);
                     yE = cont.GetYByPrice(entry, false);
                     ySl = cont.GetYByPrice(sl, false);
                     yTp = cont.GetYByPrice(tp, false);
