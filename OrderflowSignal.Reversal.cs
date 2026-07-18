@@ -270,7 +270,7 @@ namespace OrderflowSignal
         // Alarm, und merkt sie fuer die Bridge (_freshRev). Zentral -> confirm/no-confirm nutzen denselben Pfad.
         private void EmitReversal(int b, int rev, RevDbg dbg)
         {
-            if (rev != 0 && _lastRevBar >= 0 && _signalCooldownBars > 0 && (b - _lastRevBar) <= _signalCooldownBars)
+            if (rev != 0 && _lastRevBar >= 0 && _revCooldownBars > 0 && (b - _lastRevBar) <= _revCooldownBars)
                 rev = 0;   // Cooldown
             SetRevSignal(b, rev);
             if (rev == 0)

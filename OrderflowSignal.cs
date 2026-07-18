@@ -122,6 +122,7 @@ namespace OrderflowSignal
         private bool _reversalEnabled = true;
         private int _reversalLookback = 14;   // Bars fuer Extrem-/Divergenz-Referenz
         private int _reversalThreshold = 70;  // Mindest-Reversal-Score (%) -> ~3 Bedingungen
+        private int _revCooldownBars = 3;     // Mindestabstand zwischen Rauten - EIGENER Wert, entkoppelt vom Signal-Cooldown
         private int _revDivWeight = 30;       // Delta-Divergenz
         private int _revAbsWeight = 30;       // Absorption am Extrem
         private int _revVpocWeight = 20;      // vPOC im Docht
@@ -378,7 +379,7 @@ namespace OrderflowSignal
 
         [Tab(TabName = "Signal", TabOrder = 2)]
         [Display(Name = "Signal-Cooldown (Bars)", GroupName = "Signal", Order = 202,
-            Description = "Mindestabstand zwischen Markern. Rausch-Bremse fuer Tick-Charts. 0 = aus.")]
+            Description = "Mindestabstand zwischen Momentum-Markern (Dreiecke). Rausch-Bremse fuer Tick-Charts. Betrifft NUR die Dreiecke - die Reversal-Rauten haben ihren eigenen Cooldown (Reiter Reversal). 0 = aus.")]
         [Range(0, 100)]
         public int SignalCooldownBars { get => _signalCooldownBars; set { _signalCooldownBars = Math.Max(0, value); RecalculateValues(); } }
 
@@ -408,21 +409,21 @@ namespace OrderflowSignal
         // ─────────────────────────────────────────────────────────────────
         //  PROPERTIES — Kalibrierung
         // ─────────────────────────────────────────────────────────────────
-        [Tab(TabName = "Signal", TabOrder = 2)]
+        [Tab(TabName = "Allgemein", TabOrder = 1)]
         [Display(Name = "Globaler Perzentil", GroupName = "Kalibrierung", Order = 230,
-            Description = "Schwelle = dieses Perzentil der letzten N Bars. 85 = feuert in den oberen 15%. (Standard: 95)")]
+            Description = "Schwelle = dieses Perzentil der letzten N Bars. 85 = feuert in den oberen 15%. GLOBAL: gilt fuer die Signal-Bedingungen (Volumen/Delta/Absorption) UND fuer die Absorptions-Schwelle der Reversal-Engine. (Standard: 95)")]
         [Range(50, 99)]
         [NumericEditor(NumericEditorTypes.TrackBar, 50.0, 99.0, Step = 1.0)]
         public int GlobalPercentile { get => _globalPercentile; set { _globalPercentile = Math.Clamp(value, 50, 99); RecalculateValues(); } }
 
-        [Tab(TabName = "Signal", TabOrder = 2)]
+        [Tab(TabName = "Allgemein", TabOrder = 1)]
         [Display(Name = "Advanced: Perzentil pro Bedingung", GroupName = "Kalibrierung", Order = 232,
             Description = "Aus = globaler Wert fuer alle. Ein = je Bedingung eigener Perzentil unten.")]
         public bool UseAdvancedPercentiles { get => _useAdvancedPercentiles; set { _useAdvancedPercentiles = value; RecalculateValues(); } }
 
-        [Tab(TabName = "Signal", TabOrder = 2)]
+        [Tab(TabName = "Allgemein", TabOrder = 1)]
         [Display(Name = "Freeze (Kalibrierung einfrieren)", GroupName = "Kalibrierung", Order = 234,
-            Description = "Friert die aktuellen Schwellen ein (wie ein gespeichertes Template). Aus = rollend live.")]
+            Description = "Friert die aktuellen Schwellen ein (wie ein gespeichertes Template). Aus = rollend live. Wirkt global - auch auf die Reversal-Absorption.")]
         public bool FreezeCalibration
         {
             get => _freezeCalibration;
@@ -440,7 +441,7 @@ namespace OrderflowSignal
             }
         }
 
-        [Tab(TabName = "Signal", TabOrder = 2)]
+        [Tab(TabName = "Allgemein", TabOrder = 1)]
         [Display(Name = "Perzentil Volumen", GroupName = "Kalibrierung", Order = 236,
             Description = "Perzentil-Schwelle nur fuer Volumen (wenn Advanced an). Standard: 85.")]
         [Range(50, 99)]
@@ -448,7 +449,7 @@ namespace OrderflowSignal
         [VisibleWhen(nameof(UseAdvancedPercentiles), true)]
         public int VolPercentile { get => _volPercentile; set { _volPercentile = Math.Clamp(value, 50, 99); RecalculateValues(); } }
 
-        [Tab(TabName = "Signal", TabOrder = 2)]
+        [Tab(TabName = "Allgemein", TabOrder = 1)]
         [Display(Name = "Perzentil Delta", GroupName = "Kalibrierung", Order = 238,
             Description = "Perzentil-Schwelle nur fuer Delta (wenn Advanced an). Standard: 85.")]
         [Range(50, 99)]
@@ -456,7 +457,7 @@ namespace OrderflowSignal
         [VisibleWhen(nameof(UseAdvancedPercentiles), true)]
         public int DeltaPercentile { get => _deltaPercentile; set { _deltaPercentile = Math.Clamp(value, 50, 99); RecalculateValues(); } }
 
-        [Tab(TabName = "Signal", TabOrder = 2)]
+        [Tab(TabName = "Allgemein", TabOrder = 1)]
         [Display(Name = "Perzentil Absorption", GroupName = "Kalibrierung", Order = 240,
             Description = "Perzentil-Schwelle nur fuer Absorption (wenn Advanced an). Standard: 85.")]
         [Range(50, 99)]
@@ -592,6 +593,12 @@ namespace OrderflowSignal
         [Range(0, 100)]
         [NumericEditor(NumericEditorTypes.TrackBar, 0.0, 100.0, Step = 5.0)]
         public int ReversalThreshold { get => _reversalThreshold; set { _reversalThreshold = Math.Clamp(value, 0, 100); RecalculateValues(); } }
+
+        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Display(Name = "Reversal-Cooldown (Bars)", GroupName = "Reversal", Order = 305,
+            Description = "Mindestabstand zwischen Reversal-Rauten. Frueher an den Signal-Cooldown (Reiter Signal) gekoppelt - jetzt eigener Wert. 0 = aus. (Standard: 3)")]
+        [Range(0, 100)]
+        public int RevCooldownBars { get => _revCooldownBars; set { _revCooldownBars = Math.Max(0, value); RecalculateValues(); } }
 
         [Tab(TabName = "Reversal", TabOrder = 3)]
         [Display(Name = "Gewicht Delta-Divergenz", GroupName = "Treiber-Gewichte", Order = 310,
@@ -748,12 +755,12 @@ namespace OrderflowSignal
         public int RevEdgeTolerance { get => _revEdgeTolerance; set { _revEdgeTolerance = Math.Max(0, value); RedrawChart(); } }
 
         // ── KeyLevels-Konfluenz (reine Markierung) ─────────────────────────
-        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Tab(TabName = "Tools", TabOrder = 7)]
         [Display(Name = "KeyLevels-Konfluenz markieren", GroupName = "KeyLevels-Konfluenz", Order = 360,
             Description = "An = Reversals nahe an einem KeyLevel werden hervorgehoben (heller/groesserer Halo + 'KL'-Tag, im Hover das Level). Aendert die Signal-MENGE NICHT. Voraussetzung: in KeyLevels den 'Level-Export' aktivieren (Reiter Sync).")]
         public bool KlConfluence { get => _klConfluence; set { _klConfluence = value; RedrawChart(); } }
 
-        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Tab(TabName = "Tools", TabOrder = 7)]
         [Display(Name = "KeyLevels-Toleranz (Ticks)", GroupName = "KeyLevels-Konfluenz", Order = 362,
             Description = "Max. Abstand des Umkehr-Extrems zum KeyLevel, damit es als konfluent gilt. Default 4.")]
         [Range(0, 50)]
@@ -761,24 +768,24 @@ namespace OrderflowSignal
         public int KlTolTicks { get => _klTolTicks; set { _klTolTicks = Math.Max(0, value); RedrawChart(); } }
 
         // ── Auto-Bridge ────────────────────────────────────────────────────
-        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Tab(TabName = "Tools", TabOrder = 7)]
         [Display(Name = "Signal-Export (Auto-Bridge)", GroupName = "Auto-Bridge", Order = 370,
             Description = "An = pro geschlossenem LIVE-Bar wird das Signal (Momentum + Reversal) nach %APPDATA%\\ATAS\\ofs_signals\\<Instrument>.txt geschrieben. Die OrderflowAuto-Strategie liest genau DIESES getunte Signal (kein Hosting, keine Divergenz). Reine Ausgabe, aendert die Signal-Logik nicht.")]
         public bool BridgeExport { get => _bridgeExport; set { _bridgeExport = value; } }
 
-        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Tab(TabName = "Tools", TabOrder = 7)]
         [Display(Name = "Bridge-Kennung (optional)", GroupName = "Auto-Bridge", Order = 371,
             Description = "PFLICHT, wenn mehrere Charts DESSELBEN Instruments exportieren (z.B. Renko24 und 900T auf NQ) - sonst ueberschreiben sie sich gegenseitig! Wird an den Dateinamen gehaengt: Kennung 'renko24' -> ofs_signals\\NQ_renko24.txt. In der Strategie dann bei 'Signal von Instrument' exakt 'NQ_renko24' eintragen. Leer = nur <Instrument>.txt.")]
         [VisibleWhen(nameof(BridgeExport), true)]
         public string BridgeKey { get => _bridgeKey; set { _bridgeKey = value ?? ""; } }
 
         // ── Backtest-Log ───────────────────────────────────────────────────
-        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Tab(TabName = "Tools", TabOrder = 7)]
         [Display(Name = "Backtest-Log (CSV)", GroupName = "Backtest", Order = 380,
             Description = "An = jede Umkehr wird mit allen Treibern + auto-gemessenem Ausgang (MFE/MAE/Net ueber N Bars) in %APPDATA%\\ATAS\\ofs_backtest\\<Instrument>.csv geschrieben. Historie laden -> anhaken -> ganze Historie wird protokolliert. Reine Diagnose, keine Signal-Aenderung.")]
         public bool BtLog { get => _btLog; set { _btLog = value; RecalculateValues(); } }
 
-        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Tab(TabName = "Tools", TabOrder = 7)]
         [Display(Name = "Log-Horizont (Bars)", GroupName = "Backtest", Order = 381,
             Description = "Ueber wie viele geschlossene Bars der Ausgang (MFE/MAE/Net) gemessen wird. Default 15.")]
         [Range(3, 100)]
@@ -786,98 +793,98 @@ namespace OrderflowSignal
         public int BtHorizon { get => _btHorizon; set { _btHorizon = Math.Max(3, value); RecalculateValues(); } }
 
         // ── Position-Tool (SL/TP-Boxen an Signalen, rein visuell) ──────────
-        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Tab(TabName = "Tools", TabOrder = 7)]
         [Display(Name = "Position-Tool zeichnen", GroupName = "Position-Tool", Order = 390,
             Description = "An = an jedem Signal wird eine Entry-Linie + gruene TP-Zone + rote SL-Zone eingezeichnet und der Ausgang per First-Touch ausgewertet (Rahmen gruen=TP zuerst, rot=SL zuerst). Keine Order.")]
         public bool PosTool { get => _posTool; set { _posTool = value; RecalculateValues(); } }
 
-        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Tab(TabName = "Tools", TabOrder = 7)]
         [Display(Name = "Signal-Quelle", GroupName = "Position-Tool", Order = 389,
             Description = "Welche Signale das Tool auswertet: Reversal (Rauten) oder Signal (Momentum-Dreiecke).")]
         [VisibleWhen(nameof(PosTool), true)]
         public PosSource PosSignalSource { get => _posSource; set { _posSource = value; RecalculateValues(); } }
 
-        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Tab(TabName = "Tools", TabOrder = 7)]
         [Display(Name = "Statistik-Summenzeile", GroupName = "Position-Tool", Order = 396,
             Description = "Zeigt unten links W/L, Trefferquote und Netto-Ticks/Punkte ueber alle geladenen Signale (fuer die aktuellen SL/TP).")]
         [VisibleWhen(nameof(PosTool), true)]
         public bool PosShowStats { get => _posShowStats; set { _posShowStats = value; RedrawChart(); } }
 
-        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Tab(TabName = "Tools", TabOrder = 7)]
         [Display(Name = "Kosten pro Trade (Ticks)", GroupName = "Position-Tool", Order = 396,
             Description = "Kommission + Slippage pro Trade, wird vom Netto abgezogen (realistischere Zahl). Default 3.")]
         [Range(0.0, 20.0)]
         [VisibleWhen(nameof(PosTool), true)]
         public decimal PosCostTicks { get => _posCostTicks; set { _posCostTicks = Math.Max(0m, value); RedrawChart(); } }
 
-        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Tab(TabName = "Tools", TabOrder = 7)]
         [Display(Name = "Breakeven bei +Ticks (0=aus)", GroupName = "Position-Tool", Order = 402,
             Description = "Zieht den SL auf Entry, sobald der Trade +X Ticks im Plus war. Verlierer die vorher +X liefen werden dann Scratch (0) statt -SL. 0 = aus.")]
         [Range(0, 500)]
         [VisibleWhen(nameof(PosTool), true)]
         public int PosBeTrigger { get => _posBeTrigger; set { _posBeTrigger = Math.Max(0, value); RecalculateValues(); } }
 
-        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Tab(TabName = "Tools", TabOrder = 7)]
         [Display(Name = "Ausgang wie Auto-Strategie", GroupName = "Position-Tool", Order = 403,
             Description = "AN = Entry auf dem OPEN des Bars nach dem massgeblichen Close (so steigt die Strategie ein), AUS = auf dem massgeblichen Close selbst. Massgeblicher Close = Close der Bestaetigungskerze (wenn Bestaetigung an) bzw. des Signal-Bars (wenn aus). Fuer exakte Deckung denselben Breakeven-Trigger wie in der Strategie setzen.")]
         [VisibleWhen(nameof(PosTool), true)]
         public bool PosLikeAuto { get => _posLikeAuto; set { _posLikeAuto = value; RecalculateValues(); } }
 
-        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Tab(TabName = "Tools", TabOrder = 7)]
         [Display(Name = "Session-Zeitzone (Std von UTC)", GroupName = "Position-Tool", Order = 397,
             Description = "Verschiebt die Kerzenzeit (UTC) in deine lokale Zeit fuer die Session-Zuordnung. Deutschland Sommer = +2 (CEST).")]
         [Range(-12, 14)]
         [VisibleWhen(nameof(PosTool), true)]
         public int SessTz { get => _sessTz; set { _sessTz = value; RecalculateValues(); } }
 
-        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Tab(TabName = "Tools", TabOrder = 7)]
         [Display(Name = "Asia Start (Std, lokal)", GroupName = "Position-Tool", Order = 398, Description = "Beginn Asia-Session in lokaler Zeit. Default 2 (02:00).")]
         [Range(0, 23)]
         [VisibleWhen(nameof(PosTool), true)]
         public int SessAsia { get => _sessAsia; set { _sessAsia = Math.Clamp(value, 0, 23); RecalculateValues(); } }
 
-        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Tab(TabName = "Tools", TabOrder = 7)]
         [Display(Name = "London Start (Std, lokal)", GroupName = "Position-Tool", Order = 399, Description = "Beginn London-Session (= Ende Asia). Default 8 (08:00).")]
         [Range(0, 23)]
         [VisibleWhen(nameof(PosTool), true)]
         public int SessLon { get => _sessLon; set { _sessLon = Math.Clamp(value, 0, 23); RecalculateValues(); } }
 
-        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Tab(TabName = "Tools", TabOrder = 7)]
         [Display(Name = "New York Start (Std, lokal)", GroupName = "Position-Tool", Order = 400, Description = "Beginn NY-Session (= Ende London). Default 15 (15:00).")]
         [Range(0, 23)]
         [VisibleWhen(nameof(PosTool), true)]
         public int SessNy { get => _sessNy; set { _sessNy = Math.Clamp(value, 0, 23); RecalculateValues(); } }
 
-        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Tab(TabName = "Tools", TabOrder = 7)]
         [Display(Name = "New York Ende (Std, lokal)", GroupName = "Position-Tool", Order = 401, Description = "Ende NY-Session. Default 23 (23:00).")]
         [Range(0, 24)]
         [VisibleWhen(nameof(PosTool), true)]
         public int SessNyEnd { get => _sessNyEnd; set { _sessNyEnd = Math.Clamp(value, 1, 24); RecalculateValues(); } }
 
-        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Tab(TabName = "Tools", TabOrder = 7)]
         [Display(Name = "SL (Ticks)", GroupName = "Position-Tool", Order = 391, Description = "Stop-Abstand vom Entry in Ticks. Default 50.")]
         [Range(1, 1000)]
         [VisibleWhen(nameof(PosTool), true)]
         public int PosSlTicks { get => _posSlTicks; set { _posSlTicks = Math.Max(1, value); RecalculateValues(); } }
 
-        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Tab(TabName = "Tools", TabOrder = 7)]
         [Display(Name = "TP (Ticks)", GroupName = "Position-Tool", Order = 392, Description = "Ziel-Abstand vom Entry in Ticks. Default 100.")]
         [Range(1, 2000)]
         [VisibleWhen(nameof(PosTool), true)]
         public int PosTpTicks { get => _posTpTicks; set { _posTpTicks = Math.Max(1, value); RecalculateValues(); } }
 
-        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Tab(TabName = "Tools", TabOrder = 7)]
         [Display(Name = "Box-Breite (Bars)", GroupName = "Position-Tool", Order = 393, Description = "Wie weit die Boxen nach rechts reichen (in Bars). Default 20.")]
         [Range(3, 300)]
         [VisibleWhen(nameof(PosTool), true)]
         public int PosBoxBars { get => _posBoxBars; set { _posBoxBars = Math.Max(3, value); RedrawChart(); } }
 
-        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Tab(TabName = "Tools", TabOrder = 7)]
         [Display(Name = "TP-Zone Farbe", GroupName = "Position-Tool", Order = 394)]
         [VisibleWhen(nameof(PosTool), true)]
         public Color PosTpColor { get => _posTpColor; set { _posTpColor = value; RedrawChart(); } }
 
-        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Tab(TabName = "Tools", TabOrder = 7)]
         [Display(Name = "SL-Zone Farbe", GroupName = "Position-Tool", Order = 395)]
         [VisibleWhen(nameof(PosTool), true)]
         public Color PosSlColor { get => _posSlColor; set { _posSlColor = value; RedrawChart(); } }
@@ -1479,8 +1486,8 @@ namespace OrderflowSignal
             int rev = RevEvaluate(last, c, signedMld, liveCumDelta);
             if (rev != 0 && _revConfirm)
                 rev = 0;   // Folgekerze existiert noch nicht -> erst nach Bestaetigung (naechste Bar)
-            if (rev != 0 && _lastRevBar >= 0 && _signalCooldownBars > 0
-                && (last - _lastRevBar) <= _signalCooldownBars)
+            if (rev != 0 && _lastRevBar >= 0 && _revCooldownBars > 0
+                && (last - _lastRevBar) <= _revCooldownBars)
                 rev = 0;
             SetRevSignal(last, rev);
             _hudRev = rev;
