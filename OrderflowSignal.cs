@@ -129,6 +129,10 @@ namespace OrderflowSignal
         private int _revSpeedWeight = 15;     // Speed of Tape: Klimax-Spike am Extrem
         private int _revImbWeight = 0;        // (A) frischer Imbalance-Flip am Extrem (Default aus)
         private int _revAuctionWeight = 0;    // (B) Finished Auction am Extrem (Default aus)
+        // Eigene Imbalance-Params der Treiber A/B - ENTKOPPELT von den Zonen-Settings
+        // (Defaults = fruehere Zonen-Werte 3.0/3 -> verhaltensneutral).
+        private decimal _revImbRatio = 3.0m;  // Level imbalanced ab Ask >= Ratio * Bid (diagonal)
+        private int _revImbMinStack = 3;      // (A) min. konsekutive imbalanced Level im Stack
         // Zusatz-Treiber (alle Default-Gewicht 0 = neutral, aendern nichts):
         private int _revAcntWeight = 0;         // (C) Absorption Count: mehrere absorbierte Level
         private int _revAcntMin = 2;            // min. Anzahl absorbierter Level ("X of Y")
@@ -630,6 +634,19 @@ namespace OrderflowSignal
             Description = "(B) Auktion am Extrem ist abgeschlossen (kein Imbalance-Tip = Gegenseite hat gestoppt = Erschoepfung). Unfinished (Tip noch imbalanced) zaehlt nicht. 0 = aus (Default).")]
         [Range(0, 100)]
         public int RevAuctionWeight { get => _revAuctionWeight; set { _revAuctionWeight = value; RecalculateValues(); } }
+
+        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Display(Name = "Treiber A/B: Imbalance-Ratio", GroupName = "Treiber-Gewichte", Order = 320,
+            Description = "Diagonale Imbalance-Schwelle NUR fuer die Reversal-Treiber A (Imbalance-Flip) und B (Finished Auction): Level gilt als imbalanced ab Ask >= Ratio * Bid (bzw. umgekehrt). Unabhaengig von der Zonen-Ratio (Reiter Imbalance) und der Momentum-Ratio (Reiter Signal). Default 3.0.")]
+        [Range(1.0, 20.0)]
+        [NumericEditor(NumericEditorTypes.TrackBar, 1.0, 10.0, Step = 0.5, DisplayFormat = "0.0")]
+        public decimal RevImbRatio { get => _revImbRatio; set { _revImbRatio = Math.Max(1m, value); RecalculateValues(); } }
+
+        [Tab(TabName = "Reversal", TabOrder = 3)]
+        [Display(Name = "Treiber A: Min-Stack", GroupName = "Treiber-Gewichte", Order = 321,
+            Description = "NUR fuer Treiber A (Imbalance-Flip): min. konsekutive imbalanced Level, damit ein Stack am Extrem zaehlt. Unabhaengig vom Zonen-Min-Stack. Default 3.")]
+        [Range(2, 20)]
+        public int RevImbMinStack { get => _revImbMinStack; set { _revImbMinStack = Math.Clamp(value, 2, 20); RecalculateValues(); } }
 
         // ── Zusatz-Treiber (Default-Gewicht 0 = neutral) ──────────
         [Tab(TabName = "Reversal", TabOrder = 3)]

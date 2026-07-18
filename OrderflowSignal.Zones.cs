@@ -72,7 +72,7 @@ namespace OrderflowSignal
             // (2) Neue Zonen aus diesem (abgeschlossenen) Bar (Grid-basiert, Voids ueberbrueckt).
             if (detectNew)
             {
-                foreach (var run in DetectImbRuns(c))
+                foreach (var run in DetectImbRuns(c, _imbZoneRatio, _imbZoneMinStack))
                     AddImbZone(run.Low, run.High, run.Dir, bar, run.Len);
             }
         }
@@ -81,8 +81,10 @@ namespace OrderflowSignal
         // Level-Klasse: Void (kein/duenner Handel), Buy-Imb, Sell-Imb, Fair (zweiseitig).
         // Ein Lauf = zusammenhaengende Nicht-Fair-Level gleicher Aggressor-Richtung;
         // Voids UEBERBRUECKEN (kein fairer Handel = Ineffizienz), Fair BEENDET. Docht-Rand
-        // ausgeschlossen. Nur Laeufe mit >= 1 Aggressor-Level UND Laenge >= Min-Stack.
-        private List<(decimal Low, decimal High, int Dir, int Len)> DetectImbRuns(IndicatorCandle c)
+        // ausgeschlossen. Nur Laeufe mit >= 1 Aggressor-Level UND Laenge >= minStack.
+        // ratio/minStack als Parameter: Zonen nutzen die Zonen-Settings, die Reversal-
+        // Treiber A/B ihre EIGENEN (entkoppelt, sonst tunt man sich gegenseitig kaputt).
+        private List<(decimal Low, decimal High, int Dir, int Len)> DetectImbRuns(IndicatorCandle c, decimal ratio, int minStack)
         {
             var runs = new List<(decimal, decimal, int, int)>();
             decimal tick = InstrumentInfo?.TickSize ?? 0m;
@@ -113,9 +115,9 @@ namespace OrderflowSignal
                 if (a + b <= _imbVoidThreshold)
                     return _imbIncludeVoids ? 2 : 0;   // Void ueberbrueckt nur, wenn aktiviert
                 decimal bBelow = bid.TryGetValue(p - tick, out var bb) ? bb : 0m;
-                bool buy = a > 0 && (bBelow <= 0 ? true : a >= _imbZoneRatio * bBelow);
+                bool buy = a > 0 && (bBelow <= 0 ? true : a >= ratio * bBelow);
                 decimal aAbove = ask.TryGetValue(p + tick, out var aa) ? aa : 0m;
-                bool sell = b > 0 && (aAbove <= 0 ? true : b >= _imbZoneRatio * aAbove);
+                bool sell = b > 0 && (aAbove <= 0 ? true : b >= ratio * aAbove);
                 if (buy && !sell) return 1;
                 if (sell && !buy) return -1;
                 return 0;   // Fair oder ambivalent
@@ -124,7 +126,7 @@ namespace OrderflowSignal
             bool inRun = false; int runDir = 0, len = 0, aggr = 0; decimal runLo = 0, runHi = 0;
             void Flush()
             {
-                if (inRun && aggr > 0 && len >= _imbZoneMinStack)
+                if (inRun && aggr > 0 && len >= minStack)
                     runs.Add((runLo, runHi, runDir, len));
                 inRun = false; runDir = 0; len = 0; aggr = 0;
             }
@@ -161,10 +163,10 @@ namespace OrderflowSignal
 
         // (A) Hat die Kerze einen frischen, gestapelten Imbalance-Flip in Richtung dir?
         // dir > 0 = Buy-Stack (stuetzt Long-Umkehr am Tief), dir < 0 = Sell-Stack.
-        // Docht-Rand ausgeschlossen (kein Finished-Auction-Tip).
+        // Docht-Rand ausgeschlossen. Nutzt die EIGENEN Treiber-Params (_revImb*), nicht die Zonen.
         private bool HasImbStack(IndicatorCandle c, int dir)
         {
-            foreach (var r in DetectImbRuns(c))
+            foreach (var r in DetectImbRuns(c, _revImbRatio, _revImbMinStack))
                 if (r.Dir == dir) return true;
             return false;
         }
@@ -192,14 +194,14 @@ namespace OrderflowSignal
             {
                 decimal b = bid.TryGetValue(ext, out var bv) ? bv : 0m;
                 decimal a = ask.TryGetValue(ext + tick, out var av) ? av : 0m;
-                bool unfinished = b > 0 && (a <= 0 ? true : b >= _imbZoneRatio * a);
+                bool unfinished = b > 0 && (a <= 0 ? true : b >= _revImbRatio * a);
                 return !unfinished;
             }
             else
             {
                 decimal a = ask.TryGetValue(ext, out var av) ? av : 0m;
                 decimal b = bid.TryGetValue(ext - tick, out var bv) ? bv : 0m;
-                bool unfinished = a > 0 && (b <= 0 ? true : a >= _imbZoneRatio * b);
+                bool unfinished = a > 0 && (b <= 0 ? true : a >= _revImbRatio * b);
                 return !unfinished;
             }
         }
