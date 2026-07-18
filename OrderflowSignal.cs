@@ -192,8 +192,7 @@ namespace OrderflowSignal
         private int _sessAsia = 2, _sessLon = 8, _sessNy = 15, _sessNyEnd = 23;   // lokale Session-Grenzen (Std)
         private static readonly string[] SessNames = { "Asia  ", "London", "NY    " };
         private int _posBeTrigger = 0;   // SL auf Entry (Breakeven), sobald +X Ticks im Plus (0 = aus)
-        private bool _posLikeAuto = false;   // Entry auf Folgebar-Open (wie die Auto-Strategie), statt Signal-Bar-Close
-        private bool _posEntryAfterConfirm = false;   // Entry erst NACH der Bestaetigungskerze (ehrlich, kein Look-ahead)
+        private bool _posLikeAuto = false;   // Entry auf Folge-Open (wie die Auto-Strategie), statt massgeblichem Close
         // First-Touch-Auswertung je Session (0=Asia, 1=London, 2=NY). MaxFav/BeArmed = laufender Zustand.
         private readonly List<(int Bar, int Dir, int Sess, decimal Entry, decimal Tp, decimal Sl, decimal MaxFav, bool BeArmed)> _posPend = new();
         private readonly Dictionary<int, int> _posOutcome = new();   // bar -> 1 Win, -1 Loss, -2 ambivalent, 2 Breakeven, 0 offen
@@ -803,15 +802,9 @@ namespace OrderflowSignal
 
         [Tab(TabName = "Reversal", TabOrder = 3)]
         [Display(Name = "Ausgang wie Auto-Strategie", GroupName = "Position-Tool", Order = 403,
-            Description = "AN = Entry auf dem OPEN des Folgebars (N+1) statt auf dem Close des Signal-Bars (N). Fuer exakte Deckung denselben Breakeven-Trigger wie in der Strategie setzen.")]
+            Description = "AN = Entry auf dem OPEN des Bars nach dem massgeblichen Close (so steigt die Strategie ein), AUS = auf dem massgeblichen Close selbst. Massgeblicher Close = Close der Bestaetigungskerze (wenn Bestaetigung an) bzw. des Signal-Bars (wenn aus). Fuer exakte Deckung denselben Breakeven-Trigger wie in der Strategie setzen.")]
         [VisibleWhen(nameof(PosTool), true)]
         public bool PosLikeAuto { get => _posLikeAuto; set { _posLikeAuto = value; RecalculateValues(); } }
-
-        [Tab(TabName = "Reversal", TabOrder = 3)]
-        [Display(Name = "Entry erst nach Bestaetigung (ehrlich)", GroupName = "Position-Tool", Order = 404,
-            Description = "Nur wirksam wenn die Folgekerzen-Bestaetigung AN ist. AUS = Entry auf Close(N) des Signal-Bars (gewohnte Ansicht) - das ist Look-ahead, weil das bestaetigte Signal dort noch gar nicht existierte. AN = Entry auf Close(N+1) bzw. Open(N+2) - die frueheste Stelle, an der du real einsteigen konntest. Zum Vergleichen umschalten: die Differenz ist genau das, was die Bestaetigung dich an Entry-Preis kostet.")]
-        [VisibleWhen(nameof(PosTool), true)]
-        public bool PosEntryAfterConfirm { get => _posEntryAfterConfirm; set { _posEntryAfterConfirm = value; RecalculateValues(); } }
 
         [Tab(TabName = "Reversal", TabOrder = 3)]
         [Display(Name = "Session-Zeitzone (Std von UTC)", GroupName = "Position-Tool", Order = 397,

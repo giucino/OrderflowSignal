@@ -25,21 +25,21 @@ namespace OrderflowSignal
         }
 
         // EINZIGE Quelle fuer den Position-Tool-Entry (Rechnung UND Zeichnung) -> kein Drift.
-        // Default: Entry = Close(N) des Signal-Bars (bzw. Open(N+1) mit "Ausgang wie Auto-Strategie").
-        // Mit "Entry erst nach Bestaetigung" + aktiver Bestaetigung: Close(N+1) bzw. Open(N+2)
-        // -> fruehester Zeitpunkt, an dem das bestaetigte Signal real existierte (kein Look-ahead).
+        // IMMER EHRLICH (kein Look-ahead): Entry am fruehesten Zeitpunkt, an dem das Signal
+        // real existierte. Bestaetigung AN -> Close(N+1) bzw. Open(N+2); AUS -> Close(N)
+        // bzw. Open(N+1). Der fruehere Look-ahead-Modus (Entry Close(N) trotz Bestaetigung)
+        // wurde entfernt - er zeigte nicht handelbare Zahlen.
         private decimal PosEntryPrice(int bar, IndicatorCandle c)
         {
             decimal entry = c.Close;
-            bool wait = _posEntryAfterConfirm && _revConfirm;
-            if (wait)
+            if (_revConfirm)
             {
                 var cc = GetCandle(bar + 1);
                 if (cc != null) entry = cc.Close;
             }
             if (_posLikeAuto)
             {
-                var cn = GetCandle(bar + (wait ? 2 : 1));
+                var cn = GetCandle(bar + (_revConfirm ? 2 : 1));
                 if (cn != null) entry = cn.Open;
             }
             return entry;
@@ -128,7 +128,14 @@ namespace OrderflowSignal
             if (!_btLog) return;
             int dir = Math.Sign(rev);
             decimal extreme = dir > 0 ? c.Low : c.High;
+            // Ehrlicher Entry wie im Position-Tool: bei Bestaetigung ist das Signal erst
+            // am Schluss von N+1 bekannt -> Close(N+1) statt Close(N).
             decimal entry = c.Close;
+            if (_revConfirm)
+            {
+                var cc = GetCandle(bar + 1);
+                if (cc != null) entry = cc.Close;
+            }
             _btPending.Add(new BtPending
             {
                 Dir = dir, Age = 0, Pct = Math.Abs(rev),
