@@ -1437,24 +1437,6 @@ namespace OrderflowSignal
         }
 
 
-        // Schreibt eine Zeile "unixMillis\tmomentum\treversal" (letzter geschlossener Bar, ueberschreibend)
-        // nach %APPDATA%\ATAS\ofs_signals\<Instrument>.txt. Die OrderflowAuto-Strategie liest das.
-        private void WriteBridge(int bar, IndicatorCandle c, int mom, int rev)
-        {
-            try
-            {
-                string dir = System.IO.Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ATAS", "ofs_signals");
-                System.IO.Directory.CreateDirectory(dir);
-                string instr = InstrumentInfo?.Instrument ?? "instr";
-                if (_bridgeKey.Trim().Length > 0) instr += "_" + _bridgeKey.Trim();   // mehrere Timeframes je Instrument trennen
-                foreach (var ch in System.IO.Path.GetInvalidFileNameChars()) instr = instr.Replace(ch, '_');
-                string line = string.Format(System.Globalization.CultureInfo.InvariantCulture,
-                    "{0}\t{1}\t{2}\t{3}", c.LastTime.Ticks, mom, rev, c.Close);   // 4. Feld = Signalpreis
-                System.IO.File.WriteAllText(System.IO.Path.Combine(dir, instr + ".txt"), line);
-            }
-            catch { /* Datei-IO darf nie die Berechnung stoppen */ }
-        }
 
 
 
