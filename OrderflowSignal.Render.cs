@@ -642,7 +642,7 @@ namespace OrderflowSignal
             {
                 (header, sigColor, _fontBig),
                 ($"▲ {_hudBull}    ▼ {_hudBear}", _colorText, _font),
-                ($"SIGNAL: {sigText}", sigColor, _font),
+                ($"MOMENTUM: {sigText}", sigColor, _font),
                 (_hudTags, _colorText, _font),
             };
 

@@ -189,7 +189,7 @@ namespace OrderflowSignal
         private readonly List<BtPending> _btPending = new();
 
         // ── Position-Tool: SL/TP-Boxen automatisch an jedem Signal einzeichnen (rein visuell, keine Order) ──
-        public enum PosSource { Reversal, Signal }
+        public enum PosSource { Reversal, Momentum }
         private PosSource _posSource = PosSource.Reversal;   // welche Signale ausgewertet werden
         private bool _posTool = false;
         private int _posSlTicks = 50;
@@ -374,22 +374,22 @@ namespace OrderflowSignal
         [Range(10, 1000)]
         public int Lookback { get => _lookback; set { _lookback = Math.Max(10, value); RecalculateValues(); } }
 
-        [Tab(TabName = "Signal", TabOrder = 2)]
-        [Display(Name = "Signal-Schwelle (Gewichtspunkte)", GroupName = "Signal", Order = 200,
+        [Tab(TabName = "Momentum", TabOrder = 2)]
+        [Display(Name = "Momentum-Schwelle (Gewichtspunkte)", GroupName = "Momentum", Order = 200,
             Description = "Mindest-Gewichtssumme der dominanten Seite, damit ein Marker feuert. " +
                           "Bei Default-Gewichten (Summe ~100) ist 50 = Mehrheit. (Standard: 50)")]
         [Range(0, 300)]
         [NumericEditor(NumericEditorTypes.TrackBar, 0.0, 300.0, Step = 5.0)]
         public int SignalThreshold { get => _signalThreshold; set { _signalThreshold = Math.Max(0, value); RecalculateValues(); } }
 
-        [Tab(TabName = "Signal", TabOrder = 2)]
-        [Display(Name = "Signal-Cooldown (Bars)", GroupName = "Signal", Order = 202,
+        [Tab(TabName = "Momentum", TabOrder = 2)]
+        [Display(Name = "Momentum-Cooldown (Bars)", GroupName = "Momentum", Order = 202,
             Description = "Mindestabstand zwischen Momentum-Markern (Dreiecke). Rausch-Bremse fuer Tick-Charts. Betrifft NUR die Dreiecke - die Reversal-Rauten haben ihren eigenen Cooldown (Reiter Reversal). 0 = aus.")]
         [Range(0, 100)]
         public int SignalCooldownBars { get => _signalCooldownBars; set { _signalCooldownBars = Math.Max(0, value); RecalculateValues(); } }
 
-        [Tab(TabName = "Signal", TabOrder = 2)]
-        [Display(Name = "Folgekerzen-Bestaetigung (2-Kerzen)", GroupName = "Signal", Order = 203,
+        [Tab(TabName = "Momentum", TabOrder = 2)]
+        [Display(Name = "Folgekerzen-Bestaetigung (2-Kerzen)", GroupName = "Momentum", Order = 203,
             Description = "Dreieck erst, wenn die FOLGEKERZE in Signalrichtung schliesst (gleiches Prinzip wie beim Reversal, repaint-frei: live = reload). Marker erscheint dadurch einen Bar spaeter; Position-Tool und Bridge rechnen automatisch mit dem ehrlichen Entry Close(N+1). Default AUS.")]
         public bool SigConfirm { get => _sigConfirm; set { _sigConfirm = value; RecalculateValues(); } }
 
@@ -398,9 +398,9 @@ namespace OrderflowSignal
             Description = "Blendet das Info-Panel (HUD) mit Scores, Kalibrierung und Status ein/aus.")]
         public bool ShowHud { get => _showHud; set { _showHud = value; RedrawChart(); } }
 
-        [Tab(TabName = "Signal", TabOrder = 2)]
-        [Display(Name = "Signal-Marker anzeigen", GroupName = "Marker", Order = 210,
-            Description = "Zeigt die Bull/Bear-Signal-Marker (Dreiecke). Betrifft NICHT die Reversal-Rauten (eigener Schalter im Reiter Reversal).")]
+        [Tab(TabName = "Momentum", TabOrder = 2)]
+        [Display(Name = "Momentum-Marker anzeigen", GroupName = "Marker", Order = 210,
+            Description = "Zeigt die Bull/Bear-Momentum-Marker (Dreiecke). Betrifft NICHT die Reversal-Rauten (eigener Schalter im Reiter Reversal).")]
         public bool ShowMarkers { get => _showMarkers; set { _showMarkers = value; RedrawChart(); } }
 
         [Tab(TabName = "Allgemein", TabOrder = 1)]
@@ -408,7 +408,7 @@ namespace OrderflowSignal
             Description = "Zeigt die aktuellen Kalibrierungs-Schwellen (Volumen/Delta/Absorption) im HUD.")]
         public bool ShowCalibration { get => _showCalibration; set { _showCalibration = value; RedrawChart(); } }
 
-        [Tab(TabName = "Signal", TabOrder = 2)]
+        [Tab(TabName = "Momentum", TabOrder = 2)]
         [Display(Name = "Min-Score für Marker", GroupName = "Marker", Order = 212,
             Description = "Nur Marker mit Score >= diesem Wert zeichnen. 60 = mind. 3 Bedingungen " +
                           "ausgerichtet (versteckt die schwachen 50/55). 0 = alle. (Standard: 60)")]
@@ -421,7 +421,7 @@ namespace OrderflowSignal
         // ─────────────────────────────────────────────────────────────────
         [Tab(TabName = "Allgemein", TabOrder = 1)]
         [Display(Name = "Globaler Perzentil", GroupName = "Kalibrierung", Order = 230,
-            Description = "Schwelle = dieses Perzentil der letzten N Bars. 85 = feuert in den oberen 15%. GLOBAL: gilt fuer die Signal-Bedingungen (Volumen/Delta/Absorption) UND fuer die Absorptions-Schwelle der Reversal-Engine. (Standard: 95)")]
+            Description = "Schwelle = dieses Perzentil der letzten N Bars. 85 = feuert in den oberen 15%. GLOBAL: gilt fuer die Momentum-Bedingungen (Volumen/Delta/Absorption) UND fuer die Absorptions-Schwelle der Reversal-Engine. (Standard: 95)")]
         [Range(50, 99)]
         [NumericEditor(NumericEditorTypes.TrackBar, 50.0, 99.0, Step = 1.0)]
         public int GlobalPercentile { get => _globalPercentile; set { _globalPercentile = Math.Clamp(value, 50, 99); RecalculateValues(); } }
@@ -478,98 +478,98 @@ namespace OrderflowSignal
         // ─────────────────────────────────────────────────────────────────
         //  PROPERTIES — Bedingungen
         // ─────────────────────────────────────────────────────────────────
-        [Tab(TabName = "Signal", TabOrder = 2)]
+        [Tab(TabName = "Momentum", TabOrder = 2)]
         [Display(Name = "Delta aktiv", GroupName = "Bedingung: Delta", Order = 250,
             Description = "Bedingung Delta in die Bull/Bear-Wertung einbeziehen.")]
         public bool DeltaEnabled { get => _deltaEnabled; set { _deltaEnabled = value; RecalculateValues(); } }
 
-        [Tab(TabName = "Signal", TabOrder = 2)]
+        [Tab(TabName = "Momentum", TabOrder = 2)]
         [Display(Name = "Delta Gewicht", GroupName = "Bedingung: Delta", Order = 252,
             Description = "Gewichtspunkte der Delta-Bedingung in der Gesamt-Score.")]
         [Range(0, 100)]
         public int DeltaWeight { get => _deltaWeight; set { _deltaWeight = value; RecalculateValues(); } }
 
-        [Tab(TabName = "Signal", TabOrder = 2)]
+        [Tab(TabName = "Momentum", TabOrder = 2)]
         [Display(Name = "Volumen aktiv", GroupName = "Bedingung: Volumen", Order = 254,
             Description = "Bedingung Relatives Volumen in die Wertung einbeziehen.")]
         public bool VolEnabled { get => _volEnabled; set { _volEnabled = value; RecalculateValues(); } }
 
-        [Tab(TabName = "Signal", TabOrder = 2)]
+        [Tab(TabName = "Momentum", TabOrder = 2)]
         [Display(Name = "Volumen Gewicht", GroupName = "Bedingung: Volumen", Order = 256,
             Description = "Gewichtspunkte der Volumen-Bedingung.")]
         [Range(0, 100)]
         public int VolWeight { get => _volWeight; set { _volWeight = value; RecalculateValues(); } }
 
-        [Tab(TabName = "Signal", TabOrder = 2)]
+        [Tab(TabName = "Momentum", TabOrder = 2)]
         [Display(Name = "Absorption aktiv", GroupName = "Bedingung: Absorption", Order = 258,
             Description = "Bedingung Absorption (Footprint) in die Wertung einbeziehen.")]
         public bool AbsEnabled { get => _absEnabled; set { _absEnabled = value; RecalculateValues(); } }
 
-        [Tab(TabName = "Signal", TabOrder = 2)]
+        [Tab(TabName = "Momentum", TabOrder = 2)]
         [Display(Name = "Absorption Gewicht", GroupName = "Bedingung: Absorption", Order = 260,
             Description = "Footprint-Absorption: groesstes Level-Delta ueber Schwelle. Richtung = Reversal gegen den Aggressor.")]
         [Range(0, 100)]
         public int AbsWeight { get => _absWeight; set { _absWeight = value; RecalculateValues(); } }
 
-        [Tab(TabName = "Signal", TabOrder = 2)]
+        [Tab(TabName = "Momentum", TabOrder = 2)]
         [Display(Name = "VWAP aktiv", GroupName = "Bedingung: VWAP", Order = 262,
             Description = "Bedingung VWAP-Bias in die Wertung einbeziehen.")]
         public bool VwapEnabled { get => _vwapEnabled; set { _vwapEnabled = value; RecalculateValues(); } }
 
-        [Tab(TabName = "Signal", TabOrder = 2)]
+        [Tab(TabName = "Momentum", TabOrder = 2)]
         [Display(Name = "VWAP Gewicht", GroupName = "Bedingung: VWAP", Order = 264,
             Description = "Bias: Close ueber Session-VWAP = bullish, darunter = bearish. VWAP ankert taeglich (IsNewSession).")]
         [Range(0, 100)]
         public int VwapWeight { get => _vwapWeight; set { _vwapWeight = value; RecalculateValues(); } }
 
-        [Tab(TabName = "Signal", TabOrder = 2)]
+        [Tab(TabName = "Momentum", TabOrder = 2)]
         [Display(Name = "Imbalance aktiv", GroupName = "Bedingung: Imbalance", Order = 266,
             Description = "Bedingung Diagonale Imbalance in die Wertung einbeziehen.")]
         public bool ImbEnabled { get => _imbEnabled; set { _imbEnabled = value; RecalculateValues(); } }
 
-        [Tab(TabName = "Signal", TabOrder = 2)]
+        [Tab(TabName = "Momentum", TabOrder = 2)]
         [Display(Name = "Imbalance Gewicht", GroupName = "Bedingung: Imbalance", Order = 268,
             Description = "Gewichtspunkte der Imbalance-Bedingung.")]
         [Range(0, 100)]
         public int ImbWeight { get => _imbWeight; set { _imbWeight = value; RecalculateValues(); } }
 
-        [Tab(TabName = "Signal", TabOrder = 2)]
+        [Tab(TabName = "Momentum", TabOrder = 2)]
         [Display(Name = "Imbalance Ratio", GroupName = "Bedingung: Imbalance", Order = 270,
             Description = "Diagonale Schwelle: Ask[p] >= Ratio * Bid[p-Tick] (Buy) bzw. umgekehrt. Default 2.0 = 200%. (Standard: 2.0)")]
         [Range(1.0, 20.0)]
         [NumericEditor(NumericEditorTypes.TrackBar, 1.0, 10.0, Step = 0.5, DisplayFormat = "0.0")]
         public decimal ImbRatio { get => _imbRatio; set { _imbRatio = value; RecalculateValues(); } }
 
-        [Tab(TabName = "Signal", TabOrder = 2)]
+        [Tab(TabName = "Momentum", TabOrder = 2)]
         [Display(Name = "Imbalance Mindest-Anzahl", GroupName = "Bedingung: Imbalance", Order = 272,
             Description = "Mindestanzahl diagonaler Imbalances auf der dominanten Seite (gestapelt).")]
         [Range(1, 50)]
         public int ImbMinCount { get => _imbMinCount; set { _imbMinCount = Math.Max(1, value); RecalculateValues(); } }
 
-        [Tab(TabName = "Signal", TabOrder = 2)]
+        [Tab(TabName = "Momentum", TabOrder = 2)]
         [Display(Name = "vPOC-in-Wick aktiv", GroupName = "Bedingung: vPOC", Order = 274,
             Description = "Bedingung vPOC-im-Docht in die Wertung einbeziehen.")]
         public bool VpocEnabled { get => _vpocEnabled; set { _vpocEnabled = value; RecalculateValues(); } }
 
-        [Tab(TabName = "Signal", TabOrder = 2)]
+        [Tab(TabName = "Momentum", TabOrder = 2)]
         [Display(Name = "vPOC Gewicht", GroupName = "Bedingung: vPOC", Order = 276,
             Description = "POC im unteren Docht = bullish (Kaeufer-Rejection), oberer Docht = bearish.")]
         [Range(0, 100)]
         public int VpocWeight { get => _vpocWeight; set { _vpocWeight = value; RecalculateValues(); } }
 
-        [Tab(TabName = "Signal", TabOrder = 2)]
+        [Tab(TabName = "Momentum", TabOrder = 2)]
         [Display(Name = "Tape aktiv (LIVE-ONLY)", GroupName = "Bedingung: Tape", Order = 278,
             Description = "Big Trades ab Mindestgroesse. Erfasst NUR live ab Laden vorwaerts (keine Historie). " +
                           "Buy = bullish, Sell = bearish.")]
         public bool TapeEnabled { get => _tapeEnabled; set { _tapeEnabled = value; RecalculateValues(); } }
 
-        [Tab(TabName = "Signal", TabOrder = 2)]
+        [Tab(TabName = "Momentum", TabOrder = 2)]
         [Display(Name = "Tape Gewicht", GroupName = "Bedingung: Tape", Order = 280,
             Description = "Gewichtspunkte der Tape-Bedingung (Big Trades live).")]
         [Range(0, 100)]
         public int TapeWeight { get => _tapeWeight; set { _tapeWeight = value; RecalculateValues(); } }
 
-        [Tab(TabName = "Signal", TabOrder = 2)]
+        [Tab(TabName = "Momentum", TabOrder = 2)]
         [Display(Name = "Tape Mindest-Kontrakte", GroupName = "Bedingung: Tape", Order = 282,
             Description = "Ein einzelner Cumulative-Trade ab dieser Groesse zaehlt als Big Trade. Pro Instrument tunen.")]
         [Range(1, 100000)]
@@ -583,7 +583,7 @@ namespace OrderflowSignal
 
         [Tab(TabName = "Reversal", TabOrder = 3)]
         [Display(Name = "Reversal-Marker anzeigen", GroupName = "Reversal", Order = 301,
-            Description = "Zeigt die Reversal-Rauten. Unabhaengig vom Signal-Marker-Schalter (Reiter Signal).")]
+            Description = "Zeigt die Reversal-Rauten. Unabhaengig vom Momentum-Marker-Schalter (Reiter Momentum).")]
         public bool ShowReversalMarkers { get => _showReversalMarkers; set { _showReversalMarkers = value; RedrawChart(); } }
 
         [Tab(TabName = "Reversal", TabOrder = 3)]
@@ -606,7 +606,7 @@ namespace OrderflowSignal
 
         [Tab(TabName = "Reversal", TabOrder = 3)]
         [Display(Name = "Reversal-Cooldown (Bars)", GroupName = "Reversal", Order = 305,
-            Description = "Mindestabstand zwischen Reversal-Rauten. Frueher an den Signal-Cooldown (Reiter Signal) gekoppelt - jetzt eigener Wert. 0 = aus. (Standard: 3)")]
+            Description = "Mindestabstand zwischen Reversal-Rauten. Frueher an den Momentum-Cooldown (Reiter Momentum) gekoppelt - jetzt eigener Wert. 0 = aus. (Standard: 3)")]
         [Range(0, 100)]
         public int RevCooldownBars { get => _revCooldownBars; set { _revCooldownBars = Math.Max(0, value); RecalculateValues(); } }
 
@@ -654,7 +654,7 @@ namespace OrderflowSignal
 
         [Tab(TabName = "Reversal", TabOrder = 3)]
         [Display(Name = "Treiber A/B: Imbalance-Ratio", GroupName = "Treiber-Gewichte", Order = 320,
-            Description = "Diagonale Imbalance-Schwelle NUR fuer die Reversal-Treiber A (Imbalance-Flip) und B (Finished Auction): Level gilt als imbalanced ab Ask >= Ratio * Bid (bzw. umgekehrt). Unabhaengig von der Zonen-Ratio (Reiter Imbalance) und der Momentum-Ratio (Reiter Signal). Default 3.0.")]
+            Description = "Diagonale Imbalance-Schwelle NUR fuer die Reversal-Treiber A (Imbalance-Flip) und B (Finished Auction): Level gilt als imbalanced ab Ask >= Ratio * Bid (bzw. umgekehrt). Unabhaengig von der Zonen-Ratio (Reiter Imbalance) und der Momentum-Ratio (Reiter Momentum). Default 3.0.")]
         [Range(1.0, 20.0)]
         [NumericEditor(NumericEditorTypes.TrackBar, 1.0, 10.0, Step = 0.5, DisplayFormat = "0.0")]
         public decimal RevImbRatio { get => _revImbRatio; set { _revImbRatio = Math.Max(1m, value); RecalculateValues(); } }
@@ -809,8 +809,8 @@ namespace OrderflowSignal
         public bool PosTool { get => _posTool; set { _posTool = value; RecalculateValues(); } }
 
         [Tab(TabName = "Tools", TabOrder = 7)]
-        [Display(Name = "Signal-Quelle", GroupName = "Position-Tool", Order = 389,
-            Description = "Welche Signale das Tool auswertet: Reversal (Rauten) oder Signal (Momentum-Dreiecke).")]
+        [Display(Name = "Quelle (Reversal/Momentum)", GroupName = "Position-Tool", Order = 389,
+            Description = "Welche Signale das Tool auswertet: Reversal (Rauten) oder Momentum (Dreiecke).")]
         [VisibleWhen(nameof(PosTool), true)]
         public PosSource PosSignalSource { get => _posSource; set { _posSource = value; RecalculateValues(); } }
 
@@ -1246,23 +1246,23 @@ namespace OrderflowSignal
         [Range(0, 600)]
         public int OffsetY { get => _offsetY; set { _offsetY = value; RedrawChart(); } }
 
-        [Tab(TabName = "Signal", TabOrder = 2)]
+        [Tab(TabName = "Momentum", TabOrder = 2)]
         [Display(Name = "Marker-Abstand (Ticks)", GroupName = "Marker", Order = 214,
             Description = "Abstand der Marker vom Kerzen-Extrem in Ticks.")]
         [Range(0, 100)]
         public int MarkerTickOffset { get => _markerTickOffset; set { _markerTickOffset = value; RedrawChart(); } }
 
-        [Tab(TabName = "Signal", TabOrder = 2)]
+        [Tab(TabName = "Momentum", TabOrder = 2)]
         [Display(Name = "Farbe Bull", GroupName = "Marker", Order = 216,
-            Description = "Farbe der Bull-Signal-Marker.")]
+            Description = "Farbe der Bull-Momentum-Marker.")]
         public Color ColorBull { get => _colorBull; set { _colorBull = value; RedrawChart(); } }
 
-        [Tab(TabName = "Signal", TabOrder = 2)]
+        [Tab(TabName = "Momentum", TabOrder = 2)]
         [Display(Name = "Farbe Bear", GroupName = "Marker", Order = 218,
-            Description = "Farbe der Bear-Signal-Marker.")]
+            Description = "Farbe der Bear-Momentum-Marker.")]
         public Color ColorBear { get => _colorBear; set { _colorBear = value; RedrawChart(); } }
 
-        [Tab(TabName = "Signal", TabOrder = 2)]
+        [Tab(TabName = "Momentum", TabOrder = 2)]
         [Display(Name = "Farbe Neutral", GroupName = "Marker", Order = 220,
             Description = "Farbe fuer neutrale/schwache Signale.")]
         public Color ColorNeutral { get => _colorNeutral; set { _colorNeutral = value; RedrawChart(); } }
@@ -1489,7 +1489,7 @@ namespace OrderflowSignal
             _lastSignalBar = b;
             _freshMom = signedVal;   // fuer die Bridge in diesem Bar
             var cb = GetCandle(b);
-            if (cb != null && _posSource == PosSource.Signal)
+            if (cb != null && _posSource == PosSource.Momentum)
                 AddPosPending(b, cb, signedVal);   // Position-Tool: Momentum-Signal
         }
 
