@@ -31,6 +31,11 @@ namespace OrderflowSignal
 
         private int _signalThreshold = 50;   // Mindest-Gewichtssumme der dominanten Seite
         private int _signalCooldownBars = 3; // Mindestabstand zwischen Markern (0 = aus)
+        // Folgekerzen-Bestaetigung fuer MOMENTUM-Signale (analog Reversal, repaint-frei).
+        private bool _sigConfirm = false;
+        private int _sigPendBar = -1;   // Bar mit noch unbestaetigter Momentum-Kandidatin
+        private int _sigPendVal = 0;    // signierter Score der Kandidatin
+        private int _freshMom = 0;      // in DIESER ProcessClosedBar emittiertes Momentum-Signal (fuer Bridge)
 
         private bool _showHud = true;
         private bool _showMarkers = true;
@@ -382,6 +387,11 @@ namespace OrderflowSignal
             Description = "Mindestabstand zwischen Momentum-Markern (Dreiecke). Rausch-Bremse fuer Tick-Charts. Betrifft NUR die Dreiecke - die Reversal-Rauten haben ihren eigenen Cooldown (Reiter Reversal). 0 = aus.")]
         [Range(0, 100)]
         public int SignalCooldownBars { get => _signalCooldownBars; set { _signalCooldownBars = Math.Max(0, value); RecalculateValues(); } }
+
+        [Tab(TabName = "Signal", TabOrder = 2)]
+        [Display(Name = "Folgekerzen-Bestaetigung (2-Kerzen)", GroupName = "Signal", Order = 203,
+            Description = "Dreieck erst, wenn die FOLGEKERZE in Signalrichtung schliesst (gleiches Prinzip wie beim Reversal, repaint-frei: live = reload). Marker erscheint dadurch einen Bar spaeter; Position-Tool und Bridge rechnen automatisch mit dem ehrlichen Entry Close(N+1). Default AUS.")]
+        public bool SigConfirm { get => _sigConfirm; set { _sigConfirm = value; RecalculateValues(); } }
 
         [Tab(TabName = "Allgemein", TabOrder = 1)]
         [Display(Name = "HUD anzeigen", GroupName = "HUD & Panel", Order = 110,
@@ -1355,6 +1365,7 @@ namespace OrderflowSignal
             _lastSignalBar = -1;
             _lastRevBar = -1;
             _revPendBar = -1; _revPendVal = 0; _freshRev = 0;
+            _sigPendBar = -1; _sigPendVal = 0; _freshMom = 0;
             _hoverRevBar = -1;
             _revDbgByBar.Clear();
             _btPending.Clear();
@@ -1407,16 +1418,26 @@ namespace OrderflowSignal
             StoreMetric(_cumDeltaArr, bar, _cumDeltaRun);
 
             var o = EvaluateBar(bar, c, signedMld, vwap, _cumVol > 0);
-            int sig = DetermineSignal(o.Bull, o.Bear);
-            if (sig != 0 && _lastSignalBar >= 0 && _signalCooldownBars > 0
-                && (bar - _lastSignalBar) <= _signalCooldownBars)
-                sig = 0;
+            int rawSigned = SignedScore(DetermineSignal(o.Bull, o.Bear), o);
+            _freshMom = 0;   // wird von EmitMomentum gesetzt, wenn in diesem Bar ein Signal emittiert wird
 
-            SetSignal(bar, SignedScore(sig, o));
-            if (sig != 0)
+            if (_sigConfirm)
             {
-                _lastSignalBar = bar;
-                if (_posSource == PosSource.Signal) AddPosPending(bar, c, GetSignal(bar));   // Position-Tool: Momentum-Signal
+                // REPAINT-FREI wie bei den Reversals: die Folgekerze der Vorbar-Kandidatin
+                // ist JETZT (bar) voll geschlossen -> erst dann emittieren.
+                if (_sigPendBar == bar - 1 && _sigPendVal != 0)
+                {
+                    if (RevConfirmed(bar - 1, Math.Sign(_sigPendVal)))
+                        EmitMomentum(bar - 1, _sigPendVal);
+                    else
+                        SetSignal(bar - 1, 0);   // Bestaetigung endgueltig gescheitert
+                }
+                _sigPendBar = bar; _sigPendVal = rawSigned;
+                SetSignal(bar, 0);
+            }
+            else
+            {
+                EmitMomentum(bar, rawSigned);   // sofort (nutzt nur <=bar -> deterministisch)
             }
 
             int rawRev = RevEvaluate(bar, c, signedMld, _cumDeltaRun);   // setzt _revCand
@@ -1448,9 +1469,28 @@ namespace OrderflowSignal
             // Imbalance-Zonen: erst offene Zonen gegen diesen Bar pruefen, dann neue erkennen.
             ProcessImbZones(bar, c, detectNew: true);
 
-            // Auto-Bridge: die in DIESEM Bar frisch (bestaetigt) emittierte Umkehr rausschreiben (nur live).
+            // Auto-Bridge: die in DIESEM Bar frisch (bestaetigt) emittierten Signale rausschreiben (nur live).
+            // _freshMom statt GetSignal(bar): bei aktiver Momentum-Bestaetigung wird das Signal fuer
+            // bar-1 erst JETZT emittiert und muss jetzt exportiert werden (ohne Bestaetigung identisch).
             if (_bridgeExport && _histDone)
-                WriteBridge(bar, c, GetSignal(bar), _freshRev);
+                WriteBridge(bar, c, _freshMom, _freshRev);
+        }
+
+        // Emittiert ein Momentum-Signal fuer Bar b: Cooldown, Marker-Speicher, Position-Tool,
+        // Bridge-Merker. Zentral -> confirm/no-confirm nutzen denselben Pfad (wie EmitReversal).
+        private void EmitMomentum(int b, int signedVal)
+        {
+            if (signedVal != 0 && _lastSignalBar >= 0 && _signalCooldownBars > 0
+                && (b - _lastSignalBar) <= _signalCooldownBars)
+                signedVal = 0;   // Cooldown
+            SetSignal(b, signedVal);
+            if (signedVal == 0)
+                return;
+            _lastSignalBar = b;
+            _freshMom = signedVal;   // fuer die Bridge in diesem Bar
+            var cb = GetCandle(b);
+            if (cb != null && _posSource == PosSource.Signal)
+                AddPosPending(b, cb, signedVal);   // Position-Tool: Momentum-Signal
         }
 
 
@@ -1474,6 +1514,8 @@ namespace OrderflowSignal
 
             var o = EvaluateBar(last, c, signedMld, liveVwap, baseVol > 0);
             int sig = DetermineSignal(o.Bull, o.Bear);
+            if (sig != 0 && _sigConfirm)
+                sig = 0;   // Folgekerze existiert noch nicht -> erst nach Bestaetigung (naechste Bar)
             if (sig != 0 && _lastSignalBar >= 0 && _signalCooldownBars > 0
                 && (last - _lastSignalBar) <= _signalCooldownBars)
                 sig = 0;

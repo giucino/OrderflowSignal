@@ -26,12 +26,12 @@ namespace OrderflowSignal
 
         // EINZIGE Quelle fuer den Position-Tool-Entry (Rechnung UND Zeichnung) -> kein Drift.
         // IMMER EHRLICH (kein Look-ahead): Entry am fruehesten Zeitpunkt, an dem das Signal
-        // real existierte. Die Folgekerzen-Bestaetigung gibt es NUR bei Reversals -> die
-        // Verschiebung (Close(N+1) bzw. Open(N+2)) gilt nur bei Signal-Quelle Reversal.
-        // Momentum-Dreiecke sind am Close(N) final -> Close(N) bzw. Open(N+1).
+        // real existierte. Die Verschiebung (Close(N+1) bzw. Open(N+2)) gilt genau dann,
+        // wenn die BESTAETIGUNG DER AUSGEWERTETEN QUELLE aktiv ist: Reversal -> _revConfirm,
+        // Momentum -> _sigConfirm. Ohne Bestaetigung: Close(N) bzw. Open(N+1).
         private decimal PosEntryPrice(int bar, IndicatorCandle c)
         {
-            bool wait = _revConfirm && _posSource == PosSource.Reversal;
+            bool wait = _posSource == PosSource.Reversal ? _revConfirm : _sigConfirm;
             decimal entry = c.Close;
             if (wait)
             {
