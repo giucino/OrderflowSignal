@@ -42,7 +42,7 @@ namespace OrderflowSignal
         // KeyLevels-Preise aus der Datei laden (gedrosselt ~3 s). Fehlt die Datei -> keine Konfluenz.
         private void LoadKeyLevels()
         {
-            if (!_klConfluence) return;
+            if (!_klConfluence && !_ctxKlBlock) return;   // laden auch, wenn nur der Momentum-KL-Blocker aktiv ist
             var now = DateTime.UtcNow;
             if ((now - _klLastRead).TotalSeconds < 3) return;
             _klLastRead = now;

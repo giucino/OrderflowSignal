@@ -105,6 +105,22 @@ namespace OrderflowSignal
         private int _tapeWeight = 15;
         private int _tapeMinContracts = 100;
 
+        // ── KONTEXT-FILTER (nur MOMENTUM; Reversal-Logik unberuehrt). Alle Default AUS. ──
+        // (1) Trend-Gate: Efficiency Ratio + Netto-Drift ueber N Bars, Signal nur in Drift-Richtung.
+        private bool _ctxTrendGate = false;
+        private int _ctxTrendWindow = 50;
+        private decimal _ctxTrendMinEr = 0.30m;
+        // (2) KeyLevel-Blocker: Level in Signalrichtung voraus innerhalb X Ticks -> blocken.
+        private bool _ctxKlBlock = false;
+        private int _ctxKlBlockTicks = 12;
+        // (3) Balance-Veto / Ausbruchs-Fenster (nutzt den Range-Detektor).
+        private bool _ctxRangeVeto = false;
+        private bool _ctxBreakoutOnly = false;
+        private int _ctxBreakoutBars = 20;
+        // (4) Gegenstimmen-Limit: max. Score der Gegenseite (Reinheit der Konfluenz).
+        private bool _ctxOppLimit = false;
+        private int _ctxOppMax = 20;
+
         // ── BIG-TRADE-LEVELS ───────────────────────────────────────────────
         // Grosse Prints als verteidigte Levels markieren; Alarm beim Re-Test.
         // Session-abhaengige Mindestgroesse (London niedriger als US).
@@ -574,6 +590,67 @@ namespace OrderflowSignal
             Description = "Ein einzelner Cumulative-Trade ab dieser Groesse zaehlt als Big Trade. Pro Instrument tunen.")]
         [Range(1, 100000)]
         public int TapeMinContracts { get => _tapeMinContracts; set { _tapeMinContracts = Math.Max(1, value); RecalculateValues(); } }
+
+        // ── Kontext-Filter (nur Momentum) ──────────────────────────────────
+        [Tab(TabName = "Momentum", TabOrder = 2)]
+        [Display(Name = "Trend-Gate (ER + Drift)", GroupName = "Kontext-Filter", Order = 284,
+            Description = "HARTER Filter: Momentum-Signal nur, wenn ueber das Fenster ein Trend belegt ist (Efficiency Ratio >= Schwelle) UND die Drift-Richtung zur Signalrichtung passt. Blockt Momentum im Chop. Nur Momentum - Reversal unberuehrt. Default AUS.")]
+        public bool CtxTrendGate { get => _ctxTrendGate; set { _ctxTrendGate = value; RecalculateValues(); } }
+
+        [Tab(TabName = "Momentum", TabOrder = 2)]
+        [Display(Name = "Trend-Gate: Fenster (Bars)", GroupName = "Kontext-Filter", Order = 285,
+            Description = "Bars fuer Netto-Drift und Efficiency Ratio. Default 50.")]
+        [Range(10, 500)]
+        [VisibleWhen(nameof(CtxTrendGate), true)]
+        public int CtxTrendWindow { get => _ctxTrendWindow; set { _ctxTrendWindow = Math.Max(10, value); RecalculateValues(); } }
+
+        [Tab(TabName = "Momentum", TabOrder = 2)]
+        [Display(Name = "Trend-Gate: min. Efficiency Ratio", GroupName = "Kontext-Filter", Order = 286,
+            Description = "|Netto-Weg| / Pfadlaenge ueber das Fenster. Nahe 1 = gerichteter Trend, nahe 0 = Chop. Default 0.30.")]
+        [Range(0.05, 1.0)]
+        [NumericEditor(NumericEditorTypes.TrackBar, 0.05, 1.0, Step = 0.05, DisplayFormat = "0.00")]
+        public decimal CtxTrendMinEr { get => _ctxTrendMinEr; set { _ctxTrendMinEr = Math.Clamp(value, 0.05m, 1m); RecalculateValues(); } }
+
+        [Tab(TabName = "Momentum", TabOrder = 2)]
+        [Display(Name = "KeyLevel-Blocker", GroupName = "Kontext-Filter", Order = 288,
+            Description = "HARTER Filter: blockt Momentum-Signale, wenn in SIGNALRICHTUNG innerhalb der Toleranz ein KeyLevel liegt (kein Kauf in die Wand). Braucht den Level-Export im KeyLevels-Indikator; nutzt die aktuell exportierten Levels (wie die KL-Konfluenz). Default AUS.")]
+        public bool CtxKlBlock { get => _ctxKlBlock; set { _ctxKlBlock = value; RecalculateValues(); } }
+
+        [Tab(TabName = "Momentum", TabOrder = 2)]
+        [Display(Name = "KL-Blocker: Toleranz (Ticks)", GroupName = "Kontext-Filter", Order = 289,
+            Description = "So nah darf ein KeyLevel in Signalrichtung liegen, bevor geblockt wird. Default 12.")]
+        [Range(1, 200)]
+        [VisibleWhen(nameof(CtxKlBlock), true)]
+        public int CtxKlBlockTicks { get => _ctxKlBlockTicks; set { _ctxKlBlockTicks = Math.Max(1, value); RecalculateValues(); } }
+
+        [Tab(TabName = "Momentum", TabOrder = 2)]
+        [Display(Name = "Balance-Veto", GroupName = "Kontext-Filter", Order = 291,
+            Description = "HARTER Filter: blockt Momentum-Signale INNERHALB einer laufenden Balance des Range-Detektors (Burst in der Range = Mean-Reversion-Falle). Braucht den aktivierten Range-Detektor (Reiter Range). Default AUS.")]
+        public bool CtxRangeVeto { get => _ctxRangeVeto; set { _ctxRangeVeto = value; RecalculateValues(); } }
+
+        [Tab(TabName = "Momentum", TabOrder = 2)]
+        [Display(Name = "Nur nach Range-Ausbruch", GroupName = "Kontext-Filter", Order = 292,
+            Description = "VERSCHAERFT: Momentum-Signale NUR innerhalb von N Bars nach einem eingefrorenen Range-Ausbruch und NUR in Ausbruchsrichtung (echte Continuation: Struktur + Trigger). Braucht den Range-Detektor. Default AUS.")]
+        public bool CtxBreakoutOnly { get => _ctxBreakoutOnly; set { _ctxBreakoutOnly = value; RecalculateValues(); } }
+
+        [Tab(TabName = "Momentum", TabOrder = 2)]
+        [Display(Name = "Ausbruchs-Fenster (Bars)", GroupName = "Kontext-Filter", Order = 293,
+            Description = "So viele Bars nach dem Range-Ausbruch sind Signale in Ausbruchsrichtung erlaubt. Default 20.")]
+        [Range(1, 200)]
+        [VisibleWhen(nameof(CtxBreakoutOnly), true)]
+        public int CtxBreakoutBars { get => _ctxBreakoutBars; set { _ctxBreakoutBars = Math.Max(1, value); RecalculateValues(); } }
+
+        [Tab(TabName = "Momentum", TabOrder = 2)]
+        [Display(Name = "Gegenstimmen-Limit", GroupName = "Kontext-Filter", Order = 295,
+            Description = "HARTER Filter: Signal nur, wenn der Score der GEGENSEITE <= Limit ist (Reinheit der Konfluenz statt nur Dominanz). Filtert Bars, in denen z.B. Absorption/vPOC gegen die Signalrichtung feuern - die schnappen bevorzugt zurueck. Default AUS.")]
+        public bool CtxOppLimit { get => _ctxOppLimit; set { _ctxOppLimit = value; RecalculateValues(); } }
+
+        [Tab(TabName = "Momentum", TabOrder = 2)]
+        [Display(Name = "Gegenstimmen: max. Score", GroupName = "Kontext-Filter", Order = 296,
+            Description = "Maximal erlaubter Score der Gegenseite. Default 20 (= eine kleine Gegen-Bedingung).")]
+        [Range(0, 100)]
+        [VisibleWhen(nameof(CtxOppLimit), true)]
+        public int CtxOppMax { get => _ctxOppMax; set { _ctxOppMax = Math.Clamp(value, 0, 100); RecalculateValues(); } }
 
         // ── Reversal-Engine ────────────────────────────────────────────────
         [Tab(TabName = "Reversal", TabOrder = 3)]
@@ -1419,6 +1496,13 @@ namespace OrderflowSignal
 
             var o = EvaluateBar(bar, c, signedMld, vwap, _cumVol > 0);
             int rawSigned = SignedScore(DetermineSignal(o.Bull, o.Bear), o);
+            if (rawSigned != 0)
+            {
+                if (_ctxRangeVeto || _ctxBreakoutOnly)
+                    DetectorCatchUp(bar);   // Range-Detektor in Gleichschritt (nur wenn Veto aktiv)
+                if (!PassesMomFilters(bar, c, Math.Sign(rawSigned), o))
+                    rawSigned = 0;   // Kontext-Filter (nur Momentum)
+            }
             _freshMom = 0;   // wird von EmitMomentum gesetzt, wenn in diesem Bar ein Signal emittiert wird
 
             if (_sigConfirm)
@@ -1476,6 +1560,89 @@ namespace OrderflowSignal
                 WriteBridge(bar, c, _freshMom, _freshRev);
         }
 
+        // Kontext-Filter fuer MOMENTUM-Kandidaten (Reversal-Logik unberuehrt). Nutzt nur Daten
+        // <= bar -> deterministisch (live = reload), funktioniert mit und ohne Bestaetigung.
+        private bool PassesMomFilters(int bar, IndicatorCandle c, int sigDir, EvalOut o)
+        {
+            // (4) Gegenstimmen-Limit: Reinheit der Konfluenz statt nur Dominanz.
+            if (_ctxOppLimit)
+            {
+                int opp = sigDir > 0 ? o.Bear : o.Bull;
+                if (opp > _ctxOppMax) return false;
+            }
+
+            // (1) Trend-Gate: Efficiency Ratio + Drift-Richtung ueber das Fenster.
+            if (_ctxTrendGate)
+            {
+                int start = bar - _ctxTrendWindow;
+                if (start < 0) return false;   // Warmup: kein belegter Trend -> blocken
+                var c0 = GetCandle(start);
+                if (c0 == null) return false;
+                decimal net = c.Close - c0.Close;
+                decimal path = 0m, prev = c0.Close;
+                for (int i = start + 1; i <= bar; i++)
+                {
+                    var ci = GetCandle(i);
+                    if (ci == null) return false;
+                    path += Math.Abs(ci.Close - prev);
+                    prev = ci.Close;
+                }
+                if (path <= 0m) return false;
+                if (Math.Abs(net) / path < _ctxTrendMinEr) return false;   // Chop
+                if (Math.Sign(net) != sigDir) return false;                // gegen den Drift
+            }
+
+            // (2) KeyLevel-Blocker: Level in Signalrichtung voraus -> kein Kauf in die Wand.
+            if (_ctxKlBlock)
+            {
+                LoadKeyLevels();   // gedrosselt; laedt auch, wenn nur der Blocker aktiv ist
+                decimal tick = InstrumentInfo?.TickSize ?? 0m;
+                if (tick > 0m)
+                {
+                    decimal dist = tick * _ctxKlBlockTicks;
+                    foreach (var lv in _klLevels)
+                    {
+                        if (sigDir > 0 && lv.Price > c.Close && lv.Price - c.Close <= dist) return false;
+                        if (sigDir < 0 && lv.Price < c.Close && c.Close - lv.Price <= dist) return false;
+                    }
+                }
+            }
+
+            // (3) Balance-Veto / Ausbruchs-Fenster (Range-Detektor in Gleichschritt, s. DetectorCatchUp).
+            if ((_ctxRangeVeto || _ctxBreakoutOnly) && _detectorEnabled)
+            {
+                if (_ctxRangeVeto && _candActive && (bar - _candStart) >= _detectorMinBars
+                    && c.Close <= _candHi && c.Close >= _candLo)
+                    return false;   // Burst INNERHALB einer laufenden Balance
+
+                if (_ctxBreakoutOnly)
+                {
+                    if (_detRanges.Count == 0) return false;
+                    var last = _detRanges[_detRanges.Count - 1];
+                    if (last.Dir != sigDir) return false;                  // falsche Ausbruchsrichtung
+                    if (bar - last.End > _ctxBreakoutBars) return false;   // Fenster abgelaufen
+                }
+            }
+
+            return true;
+        }
+
+        // Detektor bis einschliesslich `bar` vorziehen, damit das Balance-Veto beim
+        // Momentum-Entscheid deterministisch auf dem Stand <= bar rechnet (live = reload).
+        // Gleiche Schrittfolge wie ProcessDetector -> kein Verhaltensunterschied fuer die Ranges.
+        private void DetectorCatchUp(int bar)
+        {
+            if (!_detectorEnabled)
+                return;
+            if (_lastDetBar < 0)
+                _lastDetBar = Math.Max(-1, bar - _detectorLookback);
+            while (_lastDetBar < bar)
+            {
+                _lastDetBar++;
+                DetectorStep(_lastDetBar);
+            }
+        }
+
         // Emittiert ein Momentum-Signal fuer Bar b: Cooldown, Marker-Speicher, Position-Tool,
         // Bridge-Merker. Zentral -> confirm/no-confirm nutzen denselben Pfad (wie EmitReversal).
         private void EmitMomentum(int b, int signedVal)
@@ -1514,6 +1681,8 @@ namespace OrderflowSignal
 
             var o = EvaluateBar(last, c, signedMld, liveVwap, baseVol > 0);
             int sig = DetermineSignal(o.Bull, o.Bear);
+            if (sig != 0 && !PassesMomFilters(last, c, sig, o))
+                sig = 0;   // Kontext-Filter auch im Live-HUD (Anzeige = Emission)
             if (sig != 0 && _sigConfirm)
                 sig = 0;   // Folgekerze existiert noch nicht -> erst nach Bestaetigung (naechste Bar)
             if (sig != 0 && _lastSignalBar >= 0 && _signalCooldownBars > 0
