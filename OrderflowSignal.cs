@@ -1417,7 +1417,7 @@ namespace OrderflowSignal
 
             string key = $"{_hudBull}|{_hudBear}|{_hudSignal}|{_hudRev}|{_hudTags}|{_hudWarn}|{_chartLabel}|" +
                          $"{_liveVolThr}|{_liveDeltaThr}|{_liveAbsThr}|{_freezeCalibration}|" +
-                         $"{_rangeVah}|{_rangeVal}|{_rangeVpoc}|{CurrentBar}";
+                         $"{_rangeVah}|{_rangeVal}|{_rangeVpoc}|{CurrentBar}|{_gaugeScore}|{_gaugeTag}";
             if (key != _lastRenderKey)
             {
                 _lastRenderKey = key;
@@ -1723,6 +1723,10 @@ namespace OrderflowSignal
             CheckBigLevelHits(c, last);
             // Imbalance-Zonen: Live-Approach/Fill gegen den Live-Bar (keine neuen Zonen live).
             ProcessImbZones(last, c, detectNew: false);
+
+            // Confluence-Gauge (reine Anzeige) aktualisieren.
+            if (_gaugeEnabled)
+                ComputeGauge(last, c, signedMld, liveCumDelta);
         }
 
         // ─────────────────────────────────────────────────────────────────

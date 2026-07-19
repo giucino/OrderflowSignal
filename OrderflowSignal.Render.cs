@@ -58,6 +58,9 @@ namespace OrderflowSignal
 
             if (_showHud)
                 DrawHud(context);
+
+            if (_gaugeEnabled)
+                DrawGauge(context);
         }
 
         // Big-Trade-Levels als horizontale Linien (gruenlich Buy / roetlich Sell) +
